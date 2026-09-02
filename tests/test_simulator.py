@@ -131,6 +131,51 @@ def test_same_scenario_and_fault_plan_replay_to_identical_trace() -> None:
     assert traces[0] == traces[1]
 
 
+def test_scenario_run_barrier_replays_crash_interleaving() -> None:
+    deliveries: list[tuple[int, str, str, object]] = []
+    sim = Simulator()
+    sim.register("b", recording_handler(deliveries))
+
+    trace = sim.run_scenario(
+        (
+            ScenarioAction.send("a", "b", "lost-during-crash", delay=2),
+            ScenarioAction.crash("b"),
+            ScenarioAction.run(max_events=1),
+            ScenarioAction.restart("b"),
+            ScenarioAction.send("a", "b", "after-restart", delay=1),
+        )
+    )
+
+    assert deliveries == [(3, "a", "b", "after-restart")]
+    assert [(record.time, record.kind) for record in trace if record.kind == "discard-crashed"] == [
+        (2, "discard-crashed")
+    ]
+    assert [(record.time, record.kind) for record in trace if record.kind == "restart"] == [
+        (2, "restart")
+    ]
+
+
+def test_scenario_run_barriers_are_trace_replayable() -> None:
+    actions = (
+        ScenarioAction.send("a", "b", "first", delay=1),
+        ScenarioAction.send("a", "b", "second", delay=1),
+        ScenarioAction.run(max_events=1),
+        ScenarioAction.crash("b"),
+        ScenarioAction.run(max_events=1),
+        ScenarioAction.restart("b"),
+    )
+
+    traces = []
+    for _ in range(2):
+        sim = Simulator()
+        sim.register("b", lambda _sim, _message: None)
+        traces.append(sim.run_scenario(actions))
+
+    assert traces[0] == traces[1]
+    assert [record.kind for record in traces[0]].count("deliver") == 1
+    assert [record.kind for record in traces[0]].count("discard-crashed") == 1
+
+
 def test_handler_can_schedule_followup_without_losing_determinism() -> None:
     deliveries: list[tuple[int, str, str, object]] = []
     sim = Simulator()
@@ -159,6 +204,13 @@ def test_invalid_delays_and_unknown_actions_are_rejected() -> None:
         assert "non-negative" in str(exc)
     else:
         raise AssertionError("negative message delay must be rejected")
+
+    try:
+        sim.run_scenario((ScenarioAction.run(max_events=-1),))
+    except ValueError as exc:
+        assert "max_events must be non-negative" in str(exc)
+    else:
+        raise AssertionError("negative scenario run barrier must be rejected")
 
     try:
         sim.run_scenario((ScenarioAction(kind="unknown"),))
