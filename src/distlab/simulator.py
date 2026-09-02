@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import heapq
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
-import heapq
 from typing import Any, Callable
 
 
