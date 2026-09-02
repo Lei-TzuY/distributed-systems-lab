@@ -81,6 +81,11 @@ class AppendEntriesResponse:
             raise ValueError("match_index must be non-negative")
 
 
+@dataclass(frozen=True, slots=True)
+class _ElectionTimeout:
+    generation: int
+
+
 class ElectionSafetyViolation(AssertionError):
     pass
 
@@ -92,16 +97,28 @@ class LogMatchingViolation(AssertionError):
 class RaftCluster:
     """Raft election and follower-side log-matching layer over the simulator.
 
-    The current layer models persistent term/vote/log state, RequestVote, and
-    AppendEntries consistency checks plus conflict repair. Leader next-index,
-    commit advancement, and state-machine application remain later milestones.
+    The current layer models persistent term/vote/log state, RequestVote,
+    deterministic opt-in election timeouts, and AppendEntries consistency checks
+    plus conflict repair. Leader next-index, commit advancement, and state-machine
+    application remain later milestones.
     """
 
-    def __init__(self, sim: Simulator, node_ids: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        sim: Simulator,
+        node_ids: tuple[str, ...],
+        *,
+        election_timeouts: dict[str, int] | None = None,
+    ) -> None:
         if not node_ids:
             raise ValueError("Raft cluster requires at least one node")
         if len(set(node_ids)) != len(node_ids):
             raise ValueError("Raft node ids must be unique")
+        if election_timeouts is not None:
+            if set(election_timeouts) != set(node_ids):
+                raise ValueError("election_timeouts must specify every Raft node exactly once")
+            if any(timeout <= 0 for timeout in election_timeouts.values()):
+                raise ValueError("election timeouts must be positive")
 
         self.sim = sim
         self.node_ids = node_ids
@@ -111,11 +128,16 @@ class RaftCluster:
                 cluster=self,
                 node_id=node_id,
                 peers=tuple(peer for peer in node_ids if peer != node_id),
+                election_timeout=(
+                    election_timeouts[node_id] if election_timeouts is not None else None
+                ),
             )
             for node_id in node_ids
         }
         for node_id, node in self.nodes.items():
             sim.register(node_id, node.handle_message)
+        for node in self.nodes.values():
+            node.reset_election_timeout(reason="initial")
 
     def node(self, node_id: str) -> RaftNode:
         return self.nodes[node_id]
@@ -159,11 +181,20 @@ class RaftCluster:
 
 
 class RaftNode:
-    def __init__(self, *, cluster: RaftCluster, node_id: str, peers: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        *,
+        cluster: RaftCluster,
+        node_id: str,
+        peers: tuple[str, ...],
+        election_timeout: int | None,
+    ) -> None:
         self.cluster = cluster
         self.sim = cluster.sim
         self.node_id = node_id
         self.peers = peers
+        self._election_timeout = election_timeout
+        self._election_timer_generation = 0
         persistent = self.sim.persistent_state[node_id]
         persistent.setdefault("current_term", 0)
         persistent.setdefault("voted_for", None)
@@ -203,6 +234,37 @@ class RaftNode:
         votes = self.sim.volatile_state[self.node_id].get("votes_received", set())
         return frozenset(votes)
 
+    @property
+    def election_timeout(self) -> int | None:
+        return self._election_timeout
+
+    def reset_election_timeout(self, *, reason: str) -> None:
+        """Arm a fresh deterministic election timeout and invalidate older ones."""
+
+        if self._election_timeout is None or self.role is RaftRole.LEADER:
+            return
+        self._election_timer_generation += 1
+        generation = self._election_timer_generation
+        timeout = self._election_timeout
+        self.sim._record(
+            "raft-election-timeout-reset",
+            node=self.node_id,
+            generation=generation,
+            deadline=self.sim.time + timeout,
+            reason=reason,
+        )
+        # Election timeouts are local logical-clock events, not network messages;
+        # bypass the network fault plan while preserving deterministic queue order.
+        self.sim._schedule(
+            Message(
+                src=self.node_id,
+                dst=self.node_id,
+                payload=_ElectionTimeout(generation),
+                ordinal=0,
+            ),
+            timeout,
+        )
+
     def start_election(self) -> None:
         if not self.sim.is_alive(self.node_id):
             raise RuntimeError(f"crashed node {self.node_id!r} cannot start an election")
@@ -219,6 +281,7 @@ class RaftNode:
             last_log_index=self.last_log_index,
             last_log_term=self.last_log_term,
         )
+        self.reset_election_timeout(reason="election-start")
 
         if self._has_majority(1):
             self._become_leader(term)
@@ -273,7 +336,9 @@ class RaftNode:
     def handle_message(self, sim: Simulator, message: Message) -> None:
         self._reset_volatile_defaults()
         payload = message.payload
-        if isinstance(payload, RequestVote):
+        if isinstance(payload, _ElectionTimeout):
+            self._handle_election_timeout(payload)
+        elif isinstance(payload, RequestVote):
             self._handle_request_vote(message.src, payload)
         elif isinstance(payload, RequestVoteResponse):
             self._handle_request_vote_response(payload)
@@ -283,6 +348,24 @@ class RaftNode:
             self._handle_append_entries_response(payload)
         else:
             raise TypeError(f"unsupported Raft message {type(payload).__name__}")
+
+    def _handle_election_timeout(self, timeout: _ElectionTimeout) -> None:
+        if timeout.generation != self._election_timer_generation:
+            self.sim._record(
+                "raft-election-timeout-stale",
+                node=self.node_id,
+                generation=timeout.generation,
+                current_generation=self._election_timer_generation,
+            )
+            return
+        if self.role is RaftRole.LEADER:
+            return
+        self.sim._record(
+            "raft-election-timeout",
+            node=self.node_id,
+            generation=timeout.generation,
+        )
+        self.start_election()
 
     def _handle_request_vote(self, src: str, request: RequestVote) -> None:
         if request.term > self.current_term:
@@ -296,6 +379,7 @@ class RaftNode:
                 self._persist_term_and_vote(term=request.term, voted_for=request.candidate_id)
                 self.sim.volatile_state[self.node_id]["role"] = RaftRole.FOLLOWER.value
                 grant = True
+                self.reset_election_timeout(reason="vote-granted")
 
         self.sim._record(
             "raft-vote",
@@ -342,6 +426,7 @@ class RaftNode:
         if request.term == self.current_term:
             self.sim.volatile_state[self.node_id]["role"] = RaftRole.FOLLOWER.value
             self.sim.volatile_state[self.node_id]["votes_received"] = set()
+            self.reset_election_timeout(reason="append-entries")
             if self._prefix_matches(request.prev_log_index, request.prev_log_term):
                 self._merge_entries(request.prev_log_index, request.entries)
                 success = True
@@ -448,6 +533,7 @@ class RaftNode:
             return
         self.cluster.record_leader(term, self.node_id)
         self.sim.volatile_state[self.node_id]["role"] = RaftRole.LEADER.value
+        self._election_timer_generation += 1
         self.sim._record("raft-leader", node=self.node_id, term=term)
 
     def _has_majority(self, votes: int) -> bool:
