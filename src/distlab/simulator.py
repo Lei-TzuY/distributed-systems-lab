@@ -71,6 +71,7 @@ class ScenarioAction:
     payload: Any = None
     delay: int = 1
     node: str | None = None
+    max_events: int | None = None
 
     @classmethod
     def send(cls, src: str, dst: str, payload: Any, *, delay: int = 1) -> ScenarioAction:
@@ -83,6 +84,10 @@ class ScenarioAction:
     @classmethod
     def restart(cls, node: str) -> ScenarioAction:
         return cls(kind="restart", node=node)
+
+    @classmethod
+    def run(cls, *, max_events: int | None = None) -> ScenarioAction:
+        return cls(kind="run", max_events=max_events)
 
 
 @dataclass(order=True, slots=True)
@@ -223,6 +228,8 @@ class Simulator:
                 if action.node is None:
                     raise ValueError("restart action requires node")
                 self.restart(action.node)
+            elif action.kind == "run":
+                self.run(max_events=action.max_events)
             else:
                 raise ValueError(f"unknown scenario action {action.kind!r}")
         self.run()
