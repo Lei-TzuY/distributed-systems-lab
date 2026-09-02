@@ -196,7 +196,7 @@ class SingleKeyKVLinearizabilityChecker:
         return operation.key
 
     @staticmethod
-    def _apply(item: CompletedOperation, value: str | None) -> str | None | object:
+    def _apply(item: CompletedOperation, value: str | None) -> str | object | None:
         operation = item.invocation.operation
         result = item.completion.result
         if isinstance(operation, Put):
