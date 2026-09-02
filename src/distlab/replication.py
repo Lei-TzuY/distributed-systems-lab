@@ -22,24 +22,26 @@ class PeerReplicationProgress:
 
 
 class LeaderReplicator:
-    """Deterministically drive Raft leader log replication one peer at a time.
+    """Deterministically drive Raft leader replication and commit advancement.
 
-    This bounded layer deliberately stops before commit-index advancement.  It
-    owns the leader-side ``nextIndex``/``matchIndex`` state required by Raft's
-    AppendEntries retry rule and drives the existing simulator synchronously so
-    every rejection/backtrack sequence is captured in the deterministic trace.
+    The replicator owns the leader-side ``nextIndex``/``matchIndex`` state used
+    by AppendEntries retry plus the leader's volatile ``commitIndex``. A newly
+    elected leader starts every follower at ``last_log_index + 1``. Rejections
+    decrement ``nextIndex`` one index at a time (never below 1); successful
+    responses advance ``matchIndex`` monotonically.
 
-    A newly elected leader starts every follower at ``last_log_index + 1``.
-    Rejections decrement ``nextIndex`` one index at a time (never below 1), and
-    the next probe sends the leader suffix beginning at that index.  A successful
-    response advances ``matchIndex`` monotonically and sets ``nextIndex`` to the
-    following index.
+    After every successful response, commit advancement scans backward for the
+    highest index replicated on a majority. Following Raft's safety rule, an
+    index is advanced by replica counting only when the entry at that index is
+    from the leader's current term. Committing such an entry implicitly commits
+    all preceding entries in the log.
     """
 
     def __init__(self, leader: RaftNode) -> None:
         self.leader = leader
         self.sim = leader.sim
         self._term = leader.current_term
+        self._commit_index = 0
         self._progress = {
             peer: PeerReplicationProgress(
                 next_index=leader.last_log_index + 1,
@@ -53,6 +55,10 @@ class LeaderReplicator:
     def term(self) -> int:
         return self._term
 
+    @property
+    def commit_index(self) -> int:
+        return self._commit_index
+
     def progress(self, peer: str) -> PeerReplicationProgress:
         self._require_peer(peer)
         return self._progress[peer]
@@ -60,7 +66,7 @@ class LeaderReplicator:
     def replicate(self, peer: str, *, max_attempts: int | None = None) -> bool:
         """Replicate the leader's current log to ``peer`` using deterministic retries.
 
-        Returns ``True`` after a successful AppendEntries response.  If
+        Returns ``True`` after a successful AppendEntries response. If
         ``max_attempts`` is reached first, returns ``False`` while preserving the
         latest backtracked progress for a later call.
         """
@@ -120,6 +126,7 @@ class LeaderReplicator:
                     match_index=new_match_index,
                     next_index=new_match_index + 1,
                 )
+                self.advance_commit_index()
                 return True
 
             old_next_index = progress.next_index
@@ -138,6 +145,43 @@ class LeaderReplicator:
             )
 
         return False
+
+    def advance_commit_index(self) -> int:
+        """Advance and return the leader's commit index when Raft permits it.
+
+        The leader itself counts as one replica. The method chooses the highest
+        index greater than the current commit index that is present on a
+        majority and whose log entry belongs to this leader term. It never
+        decreases ``commit_index`` and never commits an older-term entry merely
+        because that older entry is replicated on a majority.
+        """
+
+        self._require_current_leader()
+        majority = len(self.leader.cluster.node_ids) // 2 + 1
+        previous = self._commit_index
+
+        for index in range(self.leader.last_log_index, previous, -1):
+            if self.leader.log[index - 1].term != self._term:
+                continue
+            replicas = 1 + sum(
+                progress.match_index >= index for progress in self._progress.values()
+            )
+            if replicas < majority:
+                continue
+
+            self._commit_index = index
+            self.sim._record(
+                "raft-commit-advance",
+                leader=self.leader.node_id,
+                term=self._term,
+                previous_commit_index=previous,
+                commit_index=index,
+                replicas=replicas,
+                majority=majority,
+            )
+            break
+
+        return self._commit_index
 
     def _matching_response(self, peer: str, trace_start: int):
         for record in reversed(self.sim.trace[trace_start:]):
