@@ -13,6 +13,12 @@ The simulator is deliberately event-driven and single-threaded. Protocol code mu
 5. **No wall clock** — simulator progress is driven exclusively by queued events and logical time.
 6. **Structured trace** — scheduling, delivery, faults, crash, and restart decisions are recorded as `TraceRecord` values suitable for regression assertions.
 
+### Scenario interleavings
+
+`ScenarioAction.run()` is an explicit deterministic barrier inside a replayable scenario. With no limit it drains the current event queue; with `max_events=N` it consumes at most `N` queued events before the next scenario action is applied. This allows failure schedules to encode interleavings such as send → crash → deliver/discard → restart without relying on wall-clock sleeps or host scheduling.
+
+Every scenario still performs a final queue drain after the ordered action sequence, so barriers are needed only where the relative placement of crash/restart or later sends matters.
+
 ### Fault matching
 
 `FaultRule` can match a source, destination, and per-link send ordinal. Rules are evaluated in declaration order; the first matching rule wins. This makes a failure schedule explicit and reviewable.
