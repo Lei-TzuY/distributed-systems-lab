@@ -67,8 +67,8 @@ def test_append_entries_truncates_conflicting_suffix_and_appends_leader_entries(
     )
     sim.persistent_state["n2"]["log"] = (
         LogEntry(term=1, command="a"),
-        LogEntry(term=2, command="old-b"),
-        LogEntry(term=3, command="stale"),
+        LogEntry(term=3, command="stale-b"),
+        LogEntry(term=3, command="stale-c"),
     )
     cluster = RaftCluster(sim, ("n1", "n2"))
 
