@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from .simulator import Message, Simulator
 
@@ -13,9 +14,29 @@ class RaftRole(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class LogEntry:
+    term: int
+    command: Any = None
+
+    def __post_init__(self) -> None:
+        if self.term < 0:
+            raise ValueError("log entry term must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
 class RequestVote:
     term: int
     candidate_id: str
+    last_log_index: int = 0
+    last_log_term: int = 0
+
+    def __post_init__(self) -> None:
+        if self.term < 0:
+            raise ValueError("term must be non-negative")
+        if self.last_log_index < 0:
+            raise ValueError("last_log_index must be non-negative")
+        if self.last_log_term < 0:
+            raise ValueError("last_log_term must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,8 +53,9 @@ class ElectionSafetyViolation(AssertionError):
 class RaftCluster:
     """Minimal Raft election layer over the deterministic simulator.
 
-    This milestone intentionally models only term/vote persistence and RequestVote.
-    Log freshness, heartbeats, and log replication are separate later layers.
+    This milestone models persistent term/vote/log metadata and RequestVote,
+    including Raft's candidate log freshness rule. AppendEntries and actual log
+    replication remain separate later layers.
     """
 
     def __init__(self, sim: Simulator, node_ids: tuple[str, ...]) -> None:
@@ -81,6 +103,8 @@ class RaftNode:
         persistent = self.sim.persistent_state[node_id]
         persistent.setdefault("current_term", 0)
         persistent.setdefault("voted_for", None)
+        persistent.setdefault("log", ())
+        self._validate_persistent_log()
         self._reset_volatile_defaults()
 
     @property
@@ -91,6 +115,19 @@ class RaftNode:
     def voted_for(self) -> str | None:
         value = self.sim.persistent_state[self.node_id].get("voted_for")
         return value if isinstance(value, str) else None
+
+    @property
+    def log(self) -> tuple[LogEntry, ...]:
+        value = self.sim.persistent_state[self.node_id].get("log", ())
+        return tuple(value)
+
+    @property
+    def last_log_index(self) -> int:
+        return len(self.log)
+
+    @property
+    def last_log_term(self) -> int:
+        return self.log[-1].term if self.log else 0
 
     @property
     def role(self) -> RaftRole:
@@ -111,13 +148,24 @@ class RaftNode:
         volatile = self.sim.volatile_state[self.node_id]
         volatile["role"] = RaftRole.CANDIDATE.value
         volatile["votes_received"] = {self.node_id}
-        self.sim._record("raft-election-start", node=self.node_id, term=term)
+        self.sim._record(
+            "raft-election-start",
+            node=self.node_id,
+            term=term,
+            last_log_index=self.last_log_index,
+            last_log_term=self.last_log_term,
+        )
 
         if self._has_majority(1):
             self._become_leader(term)
             return
 
-        request = RequestVote(term=term, candidate_id=self.node_id)
+        request = RequestVote(
+            term=term,
+            candidate_id=self.node_id,
+            last_log_index=self.last_log_index,
+            last_log_term=self.last_log_term,
+        )
         for peer in self.peers:
             self.sim.send(self.node_id, peer, request)
 
@@ -135,8 +183,9 @@ class RaftNode:
         if request.term > self.current_term:
             self._advance_term(request.term)
 
+        log_up_to_date = self._candidate_log_is_up_to_date(request)
         grant = False
-        if request.term == self.current_term:
+        if request.term == self.current_term and log_up_to_date:
             voted_for = self.voted_for
             if voted_for is None or voted_for == request.candidate_id:
                 self._persist_term_and_vote(term=request.term, voted_for=request.candidate_id)
@@ -149,6 +198,11 @@ class RaftNode:
             candidate=request.candidate_id,
             term=request.term,
             granted=grant,
+            log_up_to_date=log_up_to_date,
+            candidate_last_log_index=request.last_log_index,
+            candidate_last_log_term=request.last_log_term,
+            voter_last_log_index=self.last_log_index,
+            voter_last_log_term=self.last_log_term,
         )
         self.sim.send(
             self.node_id,
@@ -173,6 +227,11 @@ class RaftNode:
         votes.add(response.voter_id)
         if self._has_majority(len(votes)):
             self._become_leader(response.term)
+
+    def _candidate_log_is_up_to_date(self, request: RequestVote) -> bool:
+        if request.last_log_term != self.last_log_term:
+            return request.last_log_term > self.last_log_term
+        return request.last_log_index >= self.last_log_index
 
     def _advance_term(self, term: int) -> None:
         if term <= self.current_term:
@@ -203,6 +262,13 @@ class RaftNode:
 
     def _has_majority(self, votes: int) -> bool:
         return votes >= (len(self.cluster.node_ids) // 2 + 1)
+
+    def _validate_persistent_log(self) -> None:
+        log = self.sim.persistent_state[self.node_id].get("log", ())
+        if not isinstance(log, (tuple, list)):
+            raise TypeError("persistent Raft log must be a sequence of LogEntry values")
+        if not all(isinstance(entry, LogEntry) for entry in log):
+            raise TypeError("persistent Raft log must contain only LogEntry values")
 
     def _reset_volatile_defaults(self) -> None:
         volatile = self.sim.volatile_state[self.node_id]
