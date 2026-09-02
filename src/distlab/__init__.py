@@ -1,4 +1,11 @@
-from .kv import Delete, InvalidKVCommand, Put, ReplicatedKV
+from .kv import (
+    ClientRequest,
+    ClientRequestConflict,
+    Delete,
+    InvalidKVCommand,
+    Put,
+    ReplicatedKV,
+)
 from .raft import (
     AppendEntries,
     AppendEntriesResponse,
@@ -26,6 +33,8 @@ __all__ = [
     "AppendEntries",
     "AppendEntriesResponse",
     "AppliedEntry",
+    "ClientRequest",
+    "ClientRequestConflict",
     "Delete",
     "ElectionSafetyViolation",
     "FaultAction",
