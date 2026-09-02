@@ -1,5 +1,6 @@
 from .raft import (
     ElectionSafetyViolation,
+    LogEntry,
     RaftCluster,
     RaftNode,
     RaftRole,
@@ -21,6 +22,7 @@ __all__ = [
     "FaultAction",
     "FaultPlan",
     "FaultRule",
+    "LogEntry",
     "Message",
     "RaftCluster",
     "RaftNode",
