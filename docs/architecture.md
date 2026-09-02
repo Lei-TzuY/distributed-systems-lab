@@ -44,15 +44,23 @@ Raft term and vote state are persistent, while role and votes received are volat
 
 `RequestVote` carries the candidate's `last_log_index` and `last_log_term`. A voter grants a vote only when the candidate is at least as up to date as the voter's own persistent log, using Raft's lexicographic rule: compare the last log term first, then the last log index when terms are equal. A higher-term request still advances persistent term state even when the vote is rejected because the candidate's log is stale.
 
-The log is currently a persistent sequence of `LogEntry` values used only to establish vote freshness semantics. This milestone does not implement AppendEntries, conflict repair, commit advancement, or application to a state machine.
+## Raft AppendEntries and Log Matching
+
+`AppendEntries` now establishes follower-side consistency semantics before leader replication bookkeeping is introduced. A follower accepts an append only when `prev_log_index` exists and its term matches `prev_log_term`. Rejected probes do not mutate the persistent log.
+
+On a successful append, an existing matching prefix is preserved. The first conflicting term truncates the follower suffix and the leader's remaining entries are appended persistently. A same-index/same-term entry with different contents is treated as an invariant failure rather than normal conflict repair because Raft's Log Matching property requires such entries to identify the same history.
+
+`RaftCluster.assert_log_matching()` is an executable invariant: whenever two persisted logs contain an entry at the same index and term, their prefixes through that entry must be identical. Successful follower repairs invoke the assertion immediately.
+
+The current leader API deliberately exposes only an explicit `send_append_entries()` probe. It does not yet implement `nextIndex`, `matchIndex`, retries, commit advancement, or state-machine application; those remain separate bounded milestones.
 
 ### Next layers
 
 The intended sequence is now:
 
 1. deterministic election timeout and timer reset semantics
-2. AppendEntries heartbeats and leader step-down behavior
-3. log replication and Log Matching assertions
+2. leader `nextIndex` / `matchIndex` retry loop over AppendEntries responses
+3. commit advancement and Leader Completeness / State Machine Safety assertions
 4. persistence/recovery crash matrices
 5. replicated state machine and linearizability histories
 6. snapshots and membership changes
