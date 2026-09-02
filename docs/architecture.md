@@ -38,13 +38,21 @@ The simulator maintains separate dictionaries for persistent and volatile node s
 
 This is only a simulation boundary. Raft will later wrap persistence operations in a stricter storage interface with explicit term/vote/log durability rules and crash injection at persistence boundaries.
 
+## Raft election correctness
+
+Raft term and vote state are persistent, while role and votes received are volatile. Election Safety is enforced as an executable cluster assertion: recording two different leaders for the same term raises `ElectionSafetyViolation`.
+
+`RequestVote` carries the candidate's `last_log_index` and `last_log_term`. A voter grants a vote only when the candidate is at least as up to date as the voter's own persistent log, using Raft's lexicographic rule: compare the last log term first, then the last log index when terms are equal. A higher-term request still advances persistent term state even when the vote is rejected because the candidate's log is stale.
+
+The log is currently a persistent sequence of `LogEntry` values used only to establish vote freshness semantics. This milestone does not implement AppendEntries, conflict repair, commit advancement, or application to a state machine.
+
 ### Next layers
 
-Once this foundation is stable, the intended sequence is:
+The intended sequence is now:
 
-1. Raft term/vote state and election timers
-2. RequestVote and Election Safety assertions
-3. AppendEntries and Log Matching
+1. deterministic election timeout and timer reset semantics
+2. AppendEntries heartbeats and leader step-down behavior
+3. log replication and Log Matching assertions
 4. persistence/recovery crash matrices
 5. replicated state machine and linearizability histories
 6. snapshots and membership changes
