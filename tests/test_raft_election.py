@@ -1,4 +1,4 @@
-from distlab.raft import RaftCluster, RaftRole, RequestVote
+from distlab.raft import LogEntry, RaftCluster, RaftRole, RequestVote
 from distlab.simulator import FaultAction, FaultPlan, FaultRule, Simulator
 
 
@@ -106,3 +106,117 @@ def test_crashed_node_cannot_start_election() -> None:
         assert "cannot start an election" in str(exc)
     else:
         raise AssertionError("crashed nodes must not start elections")
+
+
+def test_request_vote_rejects_candidate_with_older_last_log_term() -> None:
+    sim = Simulator()
+    sim.persistent_state["n2"]["log"] = (LogEntry(term=1), LogEntry(term=3))
+    cluster = RaftCluster(sim, ("n1", "n2"))
+
+    sim.send(
+        "n1",
+        "n2",
+        RequestVote(
+            term=4,
+            candidate_id="n1",
+            last_log_index=5,
+            last_log_term=2,
+        ),
+    )
+    sim.run(max_events=1)
+
+    assert cluster.node("n2").current_term == 4
+    assert cluster.node("n2").voted_for is None
+    vote = next(record for record in sim.trace if record.kind == "raft-vote")
+    assert vote.details["granted"] is False
+    assert vote.details["log_up_to_date"] is False
+
+
+def test_request_vote_uses_index_when_last_log_terms_match() -> None:
+    sim = Simulator()
+    sim.persistent_state["n2"]["log"] = (
+        LogEntry(term=1),
+        LogEntry(term=3),
+        LogEntry(term=3),
+    )
+    cluster = RaftCluster(sim, ("n1", "n2"))
+
+    sim.send(
+        "n1",
+        "n2",
+        RequestVote(
+            term=4,
+            candidate_id="n1",
+            last_log_index=2,
+            last_log_term=3,
+        ),
+    )
+    sim.run(max_events=1)
+
+    assert cluster.node("n2").voted_for is None
+    vote = next(record for record in sim.trace if record.kind == "raft-vote")
+    assert vote.details["granted"] is False
+    assert vote.details["candidate_last_log_index"] == 2
+    assert vote.details["voter_last_log_index"] == 3
+
+
+def test_request_vote_accepts_candidate_with_newer_log_term() -> None:
+    sim = Simulator()
+    sim.persistent_state["n2"]["log"] = (
+        LogEntry(term=1),
+        LogEntry(term=2),
+        LogEntry(term=2),
+    )
+    cluster = RaftCluster(sim, ("n1", "n2"))
+
+    sim.send(
+        "n1",
+        "n2",
+        RequestVote(
+            term=4,
+            candidate_id="n1",
+            last_log_index=1,
+            last_log_term=3,
+        ),
+    )
+    sim.run(max_events=1)
+
+    assert cluster.node("n2").voted_for == "n1"
+    vote = next(record for record in sim.trace if record.kind == "raft-vote")
+    assert vote.details["granted"] is True
+    assert vote.details["log_up_to_date"] is True
+
+
+def test_start_election_advertises_persistent_log_metadata() -> None:
+    sim = Simulator()
+    sim.persistent_state["n1"]["log"] = (
+        LogEntry(term=1),
+        LogEntry(term=2),
+        LogEntry(term=2),
+    )
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+
+    cluster.node("n1").start_election()
+
+    sends = [
+        record
+        for record in sim.trace
+        if record.kind == "send" and record.details["src"] == "n1"
+    ]
+    requests = [record.details["payload"] for record in sends]
+    assert requests
+    assert all(request.last_log_index == 3 for request in requests)
+    assert all(request.last_log_term == 2 for request in requests)
+
+
+def test_persistent_log_survives_crash_restart_boundary() -> None:
+    sim = Simulator()
+    sim.persistent_state["n1"]["log"] = (LogEntry(term=1), LogEntry(term=2))
+    cluster = RaftCluster(sim, ("n1",))
+
+    sim.crash("n1")
+    sim.restart("n1")
+
+    assert cluster.node("n1").log == (LogEntry(term=1), LogEntry(term=2))
+    assert cluster.node("n1").last_log_index == 2
+    assert cluster.node("n1").last_log_term == 2
