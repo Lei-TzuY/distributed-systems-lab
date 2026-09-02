@@ -75,7 +75,8 @@ def test_current_term_commit_implicitly_commits_prior_term_prefix() -> None:
     assert replicator.commit_index == 0
 
     leader = cluster.node("n1")
-    sim.persistent_state["n1"]["log"] = old_log + (
+    sim.persistent_state["n1"]["log"] = (
+        *old_log,
         LogEntry(term=leader.current_term, command="barrier"),
     )
 
@@ -107,5 +108,5 @@ def test_stale_replicator_cannot_advance_commit_index() -> None:
     leader.start_election()
     assert leader.current_term == 4
 
-    with pytest.raises(ReplicationError, match="leader role|stale"):
+    with pytest.raises(ReplicationError, match=r"leader role|stale"):
         replicator.advance_commit_index()
