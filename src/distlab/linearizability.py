@@ -66,7 +66,12 @@ class OperationHistory:
         self._invocations: dict[str, Invocation] = {}
         self._completions: dict[str, Completion] = {}
 
-    def invoke(self, operation_id: str, client_id: str, operation: HistoryOperation) -> Invocation:
+    def invoke(
+        self,
+        operation_id: str,
+        client_id: str,
+        operation: HistoryOperation,
+    ) -> Invocation:
         if not operation_id:
             raise ValueError("operation_id must be non-empty")
         if not client_id:
@@ -88,7 +93,11 @@ class OperationHistory:
             raise InvalidHistory(f"duplicate response for operation {operation_id!r}")
         if isinstance(invocation.operation, (Put, Delete)) and result is not None:
             raise InvalidHistory("Put/Delete responses must be None")
-        if isinstance(invocation.operation, Get) and result is not None and not isinstance(result, str):
+        if (
+            isinstance(invocation.operation, Get)
+            and result is not None
+            and not isinstance(result, str)
+        ):
             raise InvalidHistory("Get response must be str or None")
 
         completion = Completion(operation_id, result, self._next_sequence())
@@ -135,7 +144,9 @@ class SingleKeyKVLinearizabilityChecker:
 
         keys = {self._key(item.invocation.operation) for item in operations}
         if len(keys) != 1:
-            raise InvalidHistory("single-key checker requires all completed operations to use one key")
+            raise InvalidHistory(
+                "single-key checker requires all completed operations to use one key"
+            )
 
         predecessors = self._predecessors(operations)
         full_mask = (1 << len(operations)) - 1
