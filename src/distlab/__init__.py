@@ -1,6 +1,9 @@
 from .raft import (
+    AppendEntries,
+    AppendEntriesResponse,
     ElectionSafetyViolation,
     LogEntry,
+    LogMatchingViolation,
     RaftCluster,
     RaftNode,
     RaftRole,
@@ -18,11 +21,14 @@ from .simulator import (
 )
 
 __all__ = [
+    "AppendEntries",
+    "AppendEntriesResponse",
     "ElectionSafetyViolation",
     "FaultAction",
     "FaultPlan",
     "FaultRule",
     "LogEntry",
+    "LogMatchingViolation",
     "Message",
     "RaftCluster",
     "RaftNode",

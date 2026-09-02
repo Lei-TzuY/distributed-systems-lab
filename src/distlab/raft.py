@@ -46,16 +46,55 @@ class RequestVoteResponse:
     vote_granted: bool
 
 
+@dataclass(frozen=True, slots=True)
+class AppendEntries:
+    term: int
+    leader_id: str
+    prev_log_index: int = 0
+    prev_log_term: int = 0
+    entries: tuple[LogEntry, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.term < 0:
+            raise ValueError("term must be non-negative")
+        if self.prev_log_index < 0:
+            raise ValueError("prev_log_index must be non-negative")
+        if self.prev_log_term < 0:
+            raise ValueError("prev_log_term must be non-negative")
+        if self.prev_log_index == 0 and self.prev_log_term != 0:
+            raise ValueError("prev_log_term must be zero when prev_log_index is zero")
+        if not all(isinstance(entry, LogEntry) for entry in self.entries):
+            raise TypeError("entries must contain only LogEntry values")
+
+
+@dataclass(frozen=True, slots=True)
+class AppendEntriesResponse:
+    term: int
+    follower_id: str
+    success: bool
+    match_index: int
+
+    def __post_init__(self) -> None:
+        if self.term < 0:
+            raise ValueError("term must be non-negative")
+        if self.match_index < 0:
+            raise ValueError("match_index must be non-negative")
+
+
 class ElectionSafetyViolation(AssertionError):
     pass
 
 
-class RaftCluster:
-    """Minimal Raft election layer over the deterministic simulator.
+class LogMatchingViolation(AssertionError):
+    pass
 
-    This milestone models persistent term/vote/log metadata and RequestVote,
-    including Raft's candidate log freshness rule. AppendEntries and actual log
-    replication remain separate later layers.
+
+class RaftCluster:
+    """Raft election and follower-side log-matching layer over the simulator.
+
+    The current layer models persistent term/vote/log state, RequestVote, and
+    AppendEntries consistency checks plus conflict repair. Leader next-index,
+    commit advancement, and state-machine application remain later milestones.
     """
 
     def __init__(self, sim: Simulator, node_ids: tuple[str, ...]) -> None:
@@ -88,6 +127,31 @@ class RaftCluster:
                 f"Election Safety violated in term {term}: {existing!r} and {node_id!r}"
             )
         self._leaders_by_term[term] = node_id
+
+    def assert_log_matching(self) -> None:
+        """Assert Raft Log Matching over all currently persisted node logs.
+
+        If two logs contain an entry with the same index and term, their prefix
+        through that index must be identical. This executable invariant catches
+        any conflict-repair bug that would leave divergent histories sharing the
+        same Raft index/term identity.
+        """
+
+        nodes = tuple(self.nodes.values())
+        for left_index, left in enumerate(nodes):
+            for right in nodes[left_index + 1 :]:
+                shared = min(left.last_log_index, right.last_log_index)
+                for index in range(1, shared + 1):
+                    left_entry = left.log[index - 1]
+                    right_entry = right.log[index - 1]
+                    if left_entry.term != right_entry.term:
+                        continue
+                    if left.log[:index] != right.log[:index]:
+                        raise LogMatchingViolation(
+                            "Log Matching violated at "
+                            f"index {index}, term {left_entry.term}: "
+                            f"{left.node_id!r} and {right.node_id!r}"
+                        )
 
     @property
     def leaders_by_term(self) -> dict[int, str]:
@@ -169,6 +233,43 @@ class RaftNode:
         for peer in self.peers:
             self.sim.send(self.node_id, peer, request)
 
+    def send_append_entries(
+        self,
+        peer: str,
+        *,
+        prev_log_index: int | None = None,
+        entries: tuple[LogEntry, ...] = (),
+    ) -> None:
+        """Send one explicit AppendEntries probe from a live leader.
+
+        This deliberately does not implement next-index tracking yet. Tests and
+        later leader replication code can drive exact probes while follower-side
+        Raft consistency and repair semantics are established first.
+        """
+
+        if not self.sim.is_alive(self.node_id):
+            raise RuntimeError(f"crashed node {self.node_id!r} cannot send AppendEntries")
+        if self.role is not RaftRole.LEADER:
+            raise RuntimeError("only the current leader role can send AppendEntries")
+        if peer not in self.peers:
+            raise ValueError(f"unknown peer {peer!r}")
+        if prev_log_index is None:
+            prev_log_index = self.last_log_index
+        if prev_log_index < 0 or prev_log_index > self.last_log_index:
+            raise ValueError("prev_log_index must reference the leader log")
+        prev_log_term = self.log[prev_log_index - 1].term if prev_log_index else 0
+        self.sim.send(
+            self.node_id,
+            peer,
+            AppendEntries(
+                term=self.current_term,
+                leader_id=self.node_id,
+                prev_log_index=prev_log_index,
+                prev_log_term=prev_log_term,
+                entries=entries,
+            ),
+        )
+
     def handle_message(self, sim: Simulator, message: Message) -> None:
         self._reset_volatile_defaults()
         payload = message.payload
@@ -176,6 +277,10 @@ class RaftNode:
             self._handle_request_vote(message.src, payload)
         elif isinstance(payload, RequestVoteResponse):
             self._handle_request_vote_response(payload)
+        elif isinstance(payload, AppendEntries):
+            self._handle_append_entries(message.src, payload)
+        elif isinstance(payload, AppendEntriesResponse):
+            self._handle_append_entries_response(payload)
         else:
             raise TypeError(f"unsupported Raft message {type(payload).__name__}")
 
@@ -228,10 +333,91 @@ class RaftNode:
         if self._has_majority(len(votes)):
             self._become_leader(response.term)
 
+    def _handle_append_entries(self, src: str, request: AppendEntries) -> None:
+        if request.term > self.current_term:
+            self._advance_term(request.term)
+
+        success = False
+        match_index = 0
+        if request.term == self.current_term:
+            self.sim.volatile_state[self.node_id]["role"] = RaftRole.FOLLOWER.value
+            self.sim.volatile_state[self.node_id]["votes_received"] = set()
+            if self._prefix_matches(request.prev_log_index, request.prev_log_term):
+                self._merge_entries(request.prev_log_index, request.entries)
+                success = True
+                match_index = request.prev_log_index + len(request.entries)
+                self.cluster.assert_log_matching()
+
+        self.sim._record(
+            "raft-append-entries",
+            follower=self.node_id,
+            leader=request.leader_id,
+            term=request.term,
+            prev_log_index=request.prev_log_index,
+            prev_log_term=request.prev_log_term,
+            entry_count=len(request.entries),
+            success=success,
+            match_index=match_index,
+        )
+        self.sim.send(
+            self.node_id,
+            src,
+            AppendEntriesResponse(
+                term=self.current_term,
+                follower_id=self.node_id,
+                success=success,
+                match_index=match_index,
+            ),
+        )
+
+    def _handle_append_entries_response(self, response: AppendEntriesResponse) -> None:
+        if response.term > self.current_term:
+            self._advance_term(response.term)
+            return
+        self.sim._record(
+            "raft-append-response",
+            leader=self.node_id,
+            follower=response.follower_id,
+            term=response.term,
+            success=response.success,
+            match_index=response.match_index,
+        )
+
     def _candidate_log_is_up_to_date(self, request: RequestVote) -> bool:
         if request.last_log_term != self.last_log_term:
             return request.last_log_term > self.last_log_term
         return request.last_log_index >= self.last_log_index
+
+    def _prefix_matches(self, prev_log_index: int, prev_log_term: int) -> bool:
+        if prev_log_index == 0:
+            return prev_log_term == 0
+        if prev_log_index > self.last_log_index:
+            return False
+        return self.log[prev_log_index - 1].term == prev_log_term
+
+    def _merge_entries(self, prev_log_index: int, entries: tuple[LogEntry, ...]) -> None:
+        if not entries:
+            return
+        log = list(self.log)
+        insert_at = prev_log_index
+        incoming_offset = 0
+        while incoming_offset < len(entries) and insert_at < len(log):
+            existing = log[insert_at]
+            incoming = entries[incoming_offset]
+            if existing.term != incoming.term:
+                del log[insert_at:]
+                break
+            if existing != incoming:
+                raise LogMatchingViolation(
+                    "same index/term identifies different entries at "
+                    f"index {insert_at + 1}, term {existing.term}"
+                )
+            insert_at += 1
+            incoming_offset += 1
+
+        if incoming_offset < len(entries):
+            log.extend(entries[incoming_offset:])
+        self._persist_log(tuple(log))
 
     def _advance_term(self, term: int) -> None:
         if term <= self.current_term:
@@ -252,6 +438,10 @@ class RaftNode:
             term=term,
             voted_for=voted_for,
         )
+
+    def _persist_log(self, log: tuple[LogEntry, ...]) -> None:
+        self.sim.persistent_state[self.node_id]["log"] = log
+        self.sim._record("raft-persist-log", node=self.node_id, log=log)
 
     def _become_leader(self, term: int) -> None:
         if term != self.current_term or self.role is not RaftRole.CANDIDATE:
