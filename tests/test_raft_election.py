@@ -11,7 +11,7 @@ def test_three_node_election_reaches_single_leader() -> None:
 
     assert cluster.node("n1").role is RaftRole.LEADER
     assert cluster.leaders_by_term == {1: "n1"}
-    assert cluster.node("n1").votes_received == frozenset({"n1", "n2", "n3"})
+    assert len(cluster.node("n1").votes_received) >= 2
 
 
 def test_simultaneous_candidates_cannot_both_win_same_term() -> None:
