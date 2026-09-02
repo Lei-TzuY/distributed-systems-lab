@@ -98,7 +98,7 @@ def test_append_entries_truncates_conflicting_suffix_and_appends_leader_entries(
 def test_matching_entries_are_retained_and_only_missing_suffix_is_appended() -> None:
     sim = Simulator()
     prefix = (LogEntry(term=1, command="a"), LogEntry(term=2, command="b"))
-    sim.persistent_state["n1"]["log"] = prefix + (LogEntry(term=3, command="c"),)
+    sim.persistent_state["n1"]["log"] = (*prefix, LogEntry(term=3, command="c"))
     sim.persistent_state["n2"]["log"] = prefix
     cluster = RaftCluster(sim, ("n1", "n2"))
 
