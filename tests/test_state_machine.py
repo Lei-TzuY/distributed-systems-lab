@@ -88,6 +88,62 @@ def test_uncommitted_suffix_is_not_applied() -> None:
     assert applier.applied_entries("n1") == (LogEntry(term=1, command="committed"),)
 
 
+def test_durable_applied_prefix_survives_crash_and_new_applier() -> None:
+    log = (
+        LogEntry(term=1, command="first"),
+        LogEntry(term=1, command="second"),
+    )
+    sim = Simulator()
+    sim.persistent_state["n1"]["log"] = log
+    cluster = RaftCluster(sim, ("n1",))
+    cluster.node("n1").advance_commit_index(2, source="test")
+    applier = StateMachineApplier(cluster)
+
+    assert len(applier.apply_committed("n1")) == 2
+    assert sim.persistent_state["n1"]["state_machine_applied"] == log
+
+    sim.crash("n1")
+    sim.restart("n1")
+    recovered = StateMachineApplier(cluster)
+
+    assert cluster.node("n1").commit_index == 0
+    assert recovered.last_applied("n1") == 2
+    assert recovered.applied_entries("n1") == log
+    assert recovered.apply_committed("n1") == ()
+
+
+def test_reestablished_commit_index_does_not_reapply_durable_commands() -> None:
+    log = (LogEntry(term=1, command="once"),)
+    sim = Simulator()
+    sim.persistent_state["n1"]["log"] = log
+    cluster = RaftCluster(sim, ("n1",))
+    node = cluster.node("n1")
+    node.advance_commit_index(1, source="test")
+    applier = StateMachineApplier(cluster)
+    assert len(applier.apply_committed("n1")) == 1
+
+    sim.crash("n1")
+    sim.restart("n1")
+    recovered = StateMachineApplier(cluster)
+    node.advance_commit_index(1, source="recovered-test")
+
+    assert recovered.apply_committed("n1") == ()
+    apply_traces = [record for record in sim.trace if record.kind == "raft-state-machine-apply"]
+    assert len(apply_traces) == 1
+
+
+def test_recovery_rejects_durable_history_that_diverges_from_log() -> None:
+    sim = Simulator()
+    sim.persistent_state["n1"]["log"] = (LogEntry(term=1, command="log"),)
+    sim.persistent_state["n1"]["state_machine_applied"] = (
+        LogEntry(term=1, command="different"),
+    )
+    cluster = RaftCluster(sim, ("n1",))
+
+    with pytest.raises(StateMachineSafetyViolation, match="diverges from the persistent Raft log"):
+        StateMachineApplier(cluster)
+
+
 def test_state_machine_safety_rejects_different_entry_at_same_applied_index() -> None:
     sim = Simulator()
     sim.persistent_state["n1"]["log"] = (LogEntry(term=1, command="left"),)
