@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import heapq
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Callable
+from enum import StrEnum
+from typing import Any
 
 
-class FaultAction(str, Enum):
+class FaultAction(StrEnum):
     DELIVER = "deliver"
     DROP = "drop"
     DELAY = "delay"
