@@ -10,12 +10,13 @@ The first milestone provides a deterministic event-driven simulator with:
 
 - logical time
 - stable event ordering
-- deterministic seeded pseudo-randomness
 - explicit message envelopes
-- drop, delay, and duplicate fault injection
+- deterministic drop, delay, and duplicate fault schedules
 - crash/restart state hooks
 - structured execution traces
-- trace replay suitable for regression tests
+- scenario replay suitable for regression tests
+
+Seeded randomized fault generation is intentionally deferred until it can emit a persisted, replayable fault schedule.
 
 Raft election and log replication will be layered on top only after the simulator has stable reproducibility tests.
 
