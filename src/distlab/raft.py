@@ -53,6 +53,7 @@ class AppendEntries:
     prev_log_index: int = 0
     prev_log_term: int = 0
     entries: tuple[LogEntry, ...] = ()
+    leader_commit: int = 0
 
     def __post_init__(self) -> None:
         if self.term < 0:
@@ -61,6 +62,8 @@ class AppendEntries:
             raise ValueError("prev_log_index must be non-negative")
         if self.prev_log_term < 0:
             raise ValueError("prev_log_term must be non-negative")
+        if self.leader_commit < 0:
+            raise ValueError("leader_commit must be non-negative")
         if self.prev_log_index == 0 and self.prev_log_term != 0:
             raise ValueError("prev_log_term must be zero when prev_log_index is zero")
         if not all(isinstance(entry, LogEntry) for entry in self.entries):
@@ -95,13 +98,7 @@ class LogMatchingViolation(AssertionError):
 
 
 class RaftCluster:
-    """Raft election and follower-side log-matching layer over the simulator.
-
-    The current layer models persistent term/vote/log state, RequestVote,
-    deterministic opt-in election timeouts, and AppendEntries consistency checks
-    plus conflict repair. Leader next-index, commit advancement, and state-machine
-    application remain later milestones.
-    """
+    """Raft election, log matching, and commit propagation over the simulator."""
 
     def __init__(
         self,
@@ -151,14 +148,6 @@ class RaftCluster:
         self._leaders_by_term[term] = node_id
 
     def assert_log_matching(self) -> None:
-        """Assert Raft Log Matching over all currently persisted node logs.
-
-        If two logs contain an entry with the same index and term, their prefix
-        through that index must be identical. This executable invariant catches
-        any conflict-repair bug that would leave divergent histories sharing the
-        same Raft index/term identity.
-        """
-
         nodes = tuple(self.nodes.values())
         for left_index, left in enumerate(nodes):
             for right in nodes[left_index + 1 :]:
@@ -238,9 +227,31 @@ class RaftNode:
     def election_timeout(self) -> int | None:
         return self._election_timeout
 
-    def reset_election_timeout(self, *, reason: str) -> None:
-        """Arm a fresh deterministic election timeout and invalidate older ones."""
+    @property
+    def commit_index(self) -> int:
+        return int(self.sim.volatile_state[self.node_id].get("commit_index", 0))
 
+    def advance_commit_index(self, index: int, *, source: str) -> int:
+        """Monotonically advance this node's volatile commit index."""
+
+        if index < 0:
+            raise ValueError("commit index must be non-negative")
+        if index > self.last_log_index:
+            raise ValueError("commit index cannot exceed the local log")
+        previous = self.commit_index
+        if index <= previous:
+            return previous
+        self.sim.volatile_state[self.node_id]["commit_index"] = index
+        self.sim._record(
+            "raft-commit-index",
+            node=self.node_id,
+            previous_commit_index=previous,
+            commit_index=index,
+            source=source,
+        )
+        return index
+
+    def reset_election_timeout(self, *, reason: str) -> None:
         if self._election_timeout is None or self.role is RaftRole.LEADER:
             return
         self._election_timer_generation += 1
@@ -253,8 +264,6 @@ class RaftNode:
             deadline=self.sim.time + timeout,
             reason=reason,
         )
-        # Election timeouts are local logical-clock events, not network messages;
-        # bypass the network fault plan while preserving deterministic queue order.
         self.sim._schedule(
             Message(
                 src=self.node_id,
@@ -268,7 +277,6 @@ class RaftNode:
     def start_election(self) -> None:
         if not self.sim.is_alive(self.node_id):
             raise RuntimeError(f"crashed node {self.node_id!r} cannot start an election")
-
         term = self.current_term + 1
         self._persist_term_and_vote(term=term, voted_for=self.node_id)
         volatile = self.sim.volatile_state[self.node_id]
@@ -282,11 +290,9 @@ class RaftNode:
             last_log_term=self.last_log_term,
         )
         self.reset_election_timeout(reason="election-start")
-
         if self._has_majority(1):
             self._become_leader(term)
             return
-
         request = RequestVote(
             term=term,
             candidate_id=self.node_id,
@@ -302,14 +308,8 @@ class RaftNode:
         *,
         prev_log_index: int | None = None,
         entries: tuple[LogEntry, ...] = (),
+        leader_commit: int | None = None,
     ) -> None:
-        """Send one explicit AppendEntries probe from a live leader.
-
-        This deliberately does not implement next-index tracking yet. Tests and
-        later leader replication code can drive exact probes while follower-side
-        Raft consistency and repair semantics are established first.
-        """
-
         if not self.sim.is_alive(self.node_id):
             raise RuntimeError(f"crashed node {self.node_id!r} cannot send AppendEntries")
         if self.role is not RaftRole.LEADER:
@@ -320,6 +320,10 @@ class RaftNode:
             prev_log_index = self.last_log_index
         if prev_log_index < 0 or prev_log_index > self.last_log_index:
             raise ValueError("prev_log_index must reference the leader log")
+        if leader_commit is None:
+            leader_commit = self.commit_index
+        if leader_commit < 0 or leader_commit > self.last_log_index:
+            raise ValueError("leader_commit must reference the leader log")
         prev_log_term = self.log[prev_log_index - 1].term if prev_log_index else 0
         self.sim.send(
             self.node_id,
@@ -330,6 +334,7 @@ class RaftNode:
                 prev_log_index=prev_log_index,
                 prev_log_term=prev_log_term,
                 entries=entries,
+                leader_commit=leader_commit,
             ),
         )
 
@@ -360,17 +365,12 @@ class RaftNode:
             return
         if self.role is RaftRole.LEADER:
             return
-        self.sim._record(
-            "raft-election-timeout",
-            node=self.node_id,
-            generation=timeout.generation,
-        )
+        self.sim._record("raft-election-timeout", node=self.node_id, generation=timeout.generation)
         self.start_election()
 
     def _handle_request_vote(self, src: str, request: RequestVote) -> None:
         if request.term > self.current_term:
             self._advance_term(request.term)
-
         log_up_to_date = self._candidate_log_is_up_to_date(request)
         grant = False
         if request.term == self.current_term and log_up_to_date:
@@ -380,7 +380,6 @@ class RaftNode:
                 self.sim.volatile_state[self.node_id]["role"] = RaftRole.FOLLOWER.value
                 grant = True
                 self.reset_election_timeout(reason="vote-granted")
-
         self.sim._record(
             "raft-vote",
             voter=self.node_id,
@@ -396,11 +395,7 @@ class RaftNode:
         self.sim.send(
             self.node_id,
             src,
-            RequestVoteResponse(
-                term=self.current_term,
-                voter_id=self.node_id,
-                vote_granted=grant,
-            ),
+            RequestVoteResponse(term=self.current_term, voter_id=self.node_id, vote_granted=grant),
         )
 
     def _handle_request_vote_response(self, response: RequestVoteResponse) -> None:
@@ -411,7 +406,6 @@ class RaftNode:
             return
         if not response.vote_granted:
             return
-
         votes = self.sim.volatile_state[self.node_id].setdefault("votes_received", set())
         votes.add(response.voter_id)
         if self._has_majority(len(votes)):
@@ -420,19 +414,22 @@ class RaftNode:
     def _handle_append_entries(self, src: str, request: AppendEntries) -> None:
         if request.term > self.current_term:
             self._advance_term(request.term)
-
         success = False
         match_index = 0
         if request.term == self.current_term:
-            self.sim.volatile_state[self.node_id]["role"] = RaftRole.FOLLOWER.value
-            self.sim.volatile_state[self.node_id]["votes_received"] = set()
+            volatile = self.sim.volatile_state[self.node_id]
+            volatile["role"] = RaftRole.FOLLOWER.value
+            volatile["votes_received"] = set()
             self.reset_election_timeout(reason="append-entries")
             if self._prefix_matches(request.prev_log_index, request.prev_log_term):
                 self._merge_entries(request.prev_log_index, request.entries)
                 success = True
                 match_index = request.prev_log_index + len(request.entries)
+                if request.leader_commit > self.commit_index:
+                    self.advance_commit_index(
+                        min(request.leader_commit, match_index), source=request.leader_id
+                    )
                 self.cluster.assert_log_matching()
-
         self.sim._record(
             "raft-append-entries",
             follower=self.node_id,
@@ -441,6 +438,8 @@ class RaftNode:
             prev_log_index=request.prev_log_index,
             prev_log_term=request.prev_log_term,
             entry_count=len(request.entries),
+            leader_commit=request.leader_commit,
+            commit_index=self.commit_index,
             success=success,
             match_index=match_index,
         )
@@ -499,7 +498,6 @@ class RaftNode:
                 )
             insert_at += 1
             incoming_offset += 1
-
         if incoming_offset < len(entries):
             log.extend(entries[incoming_offset:])
         self._persist_log(tuple(log))
@@ -518,10 +516,7 @@ class RaftNode:
         persistent["current_term"] = term
         persistent["voted_for"] = voted_for
         self.sim._record(
-            "raft-persist-term-vote",
-            node=self.node_id,
-            term=term,
-            voted_for=voted_for,
+            "raft-persist-term-vote", node=self.node_id, term=term, voted_for=voted_for
         )
 
     def _persist_log(self, log: tuple[LogEntry, ...]) -> None:
@@ -550,3 +545,4 @@ class RaftNode:
         volatile = self.sim.volatile_state[self.node_id]
         volatile.setdefault("role", RaftRole.FOLLOWER.value)
         volatile.setdefault("votes_received", set())
+        volatile.setdefault("commit_index", 0)
