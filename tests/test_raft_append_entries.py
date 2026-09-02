@@ -7,7 +7,7 @@ from distlab.raft import (
     RaftCluster,
     RaftRole,
 )
-from distlab.simulator import Simulator
+from distlab.simulator import FaultAction, FaultPlan, FaultRule, Simulator
 
 
 def test_append_entries_rejects_missing_previous_entry_without_mutating_log() -> None:
@@ -120,10 +120,22 @@ def test_matching_entries_are_retained_and_only_missing_suffix_is_appended() -> 
     assert len(persisted) == 1
 
 
-def test_same_term_append_entries_steps_candidate_down() -> None:
-    sim = Simulator()
+def _candidate_without_deliverable_vote_requests() -> tuple[Simulator, RaftCluster]:
+    sim = Simulator(
+        fault_plan=FaultPlan(
+            (
+                FaultRule(FaultAction.DROP, src="n2", dst="n1", ordinal=1),
+                FaultRule(FaultAction.DROP, src="n2", dst="n3", ordinal=1),
+            )
+        )
+    )
     cluster = RaftCluster(sim, ("n1", "n2", "n3"))
     cluster.node("n2").start_election()
+    return sim, cluster
+
+
+def test_same_term_append_entries_steps_candidate_down() -> None:
+    sim, cluster = _candidate_without_deliverable_vote_requests()
     assert cluster.node("n2").role is RaftRole.CANDIDATE
 
     sim.send("n1", "n2", AppendEntries(term=1, leader_id="n1"))
@@ -134,9 +146,7 @@ def test_same_term_append_entries_steps_candidate_down() -> None:
 
 
 def test_higher_term_append_entries_advances_term_and_clears_vote() -> None:
-    sim = Simulator()
-    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
-    cluster.node("n2").start_election()
+    sim, cluster = _candidate_without_deliverable_vote_requests()
     assert cluster.node("n2").voted_for == "n2"
 
     sim.send("n1", "n2", AppendEntries(term=4, leader_id="n1"))
