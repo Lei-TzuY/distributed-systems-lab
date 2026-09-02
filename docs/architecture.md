@@ -46,23 +46,34 @@ Raft term and vote state are persistent, while role and votes received are volat
 
 ## Raft AppendEntries and Log Matching
 
-`AppendEntries` now establishes follower-side consistency semantics before leader replication bookkeeping is introduced. A follower accepts an append only when `prev_log_index` exists and its term matches `prev_log_term`. Rejected probes do not mutate the persistent log.
+A follower accepts an append only when `prev_log_index` exists and its term matches `prev_log_term`. Rejected probes do not mutate the persistent log. On success, matching prefixes are preserved and conflicting suffixes are replaced. `RaftCluster.assert_log_matching()` remains an executable invariant over persistent logs.
 
-On a successful append, an existing matching prefix is preserved. The first conflicting term truncates the follower suffix and the leader's remaining entries are appended persistently. A same-index/same-term entry with different contents is treated as an invariant failure rather than normal conflict repair because Raft's Log Matching property requires such entries to identify the same history.
+Leader replication tracks per-peer `nextIndex` and `matchIndex`, retries rejected AppendEntries deterministically, and advances `commitIndex` only when a current-term entry is stored on a majority. `leaderCommit` is propagated to followers on subsequent AppendEntries.
 
-`RaftCluster.assert_log_matching()` is an executable invariant: whenever two persisted logs contain an entry at the same index and term, their prefixes through that entry must be identical. Successful follower repairs invoke the assertion immediately.
+## State-machine application and durability
 
-The current leader API deliberately exposes only an explicit `send_append_entries()` probe. It does not yet implement `nextIndex`, `matchIndex`, retries, commit advancement, or state-machine application; those remain separate bounded milestones.
+`StateMachineApplier` applies committed entries strictly in log-index order and persists the applied prefix. State Machine Safety is executable: two nodes may not apply different log entries at the same index.
+
+`commitIndex` remains volatile. After restart it may temporarily fall below durable `lastApplied`; this does not roll back the state machine. A new applier reconstructs `lastApplied` from durable applied history, validates that the history is a prefix of the persistent Raft log, and refuses divergent recovery state.
+
+## Replicated KV boundary
+
+`ReplicatedKV` is the first concrete deterministic state machine. Its initial command set is intentionally small: `Put(key, value)` and `Delete(key)`, with non-empty string keys and string values.
+
+KV state is derived from the durable applied Raft prefix rather than stored as an independent second source of truth. Reconstructing a KV instance after crash/restart replays the durable applied history, so uncommitted entries are never exposed and previously applied state is recovered deterministically. Unsupported committed commands are rejected before durable applied progress advances.
+
+`ReplicatedKV.assert_replica_consistency()` checks the deterministic-state-machine property directly: nodes with identical applied prefixes must have identical KV snapshots. This complements State Machine Safety, which checks equality of the applied log entry at each index.
+
+Client identity, request deduplication, linearizability histories, snapshots, and membership changes are deliberately not part of this layer.
 
 ### Next layers
 
 The intended sequence is now:
 
-1. deterministic election timeout and timer reset semantics
-2. leader `nextIndex` / `matchIndex` retry loop over AppendEntries responses
-3. commit advancement and Leader Completeness / State Machine Safety assertions
-4. persistence/recovery crash matrices
-5. replicated state machine and linearizability histories
-6. snapshots and membership changes
+1. client request identity and durable deduplication semantics
+2. replicated KV client history capture
+3. linearizability checker and failing-history minimization
+4. snapshot/install-snapshot correctness and recovery
+5. membership changes with explicit safety invariants
 
 No additional consensus protocol should be introduced before the Raft safety harness is mature.
