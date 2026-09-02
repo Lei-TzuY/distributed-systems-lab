@@ -19,10 +19,12 @@ from .simulator import (
     Simulator,
     TraceRecord,
 )
+from .state_machine import AppliedEntry, StateMachineApplier, StateMachineSafetyViolation
 
 __all__ = [
     "AppendEntries",
     "AppendEntriesResponse",
+    "AppliedEntry",
     "ElectionSafetyViolation",
     "FaultAction",
     "FaultPlan",
@@ -37,5 +39,7 @@ __all__ = [
     "RequestVoteResponse",
     "ScenarioAction",
     "Simulator",
+    "StateMachineApplier",
+    "StateMachineSafetyViolation",
     "TraceRecord",
 ]
