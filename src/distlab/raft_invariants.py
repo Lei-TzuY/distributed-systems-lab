@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .raft import LogEntry, RaftCluster, RaftNode, RaftRole
+from .raft import ElectionSafetyViolation, LogEntry, RaftCluster, RaftNode, RaftRole
 from .state_machine import StateMachineApplier
 
 
@@ -16,6 +16,42 @@ class CommittedEntryObservation:
     entry: LogEntry
     committed_in_term: int
     leader_id: str
+
+
+class ElectionSafetyChecker:
+    """Executable Election Safety assertion across deterministic lifecycle checkpoints.
+
+    The checker independently remembers the first leader observed for every term.
+    Each checkpoint validates both the cluster's recorded leaders and all nodes that
+    currently expose the leader role. Seeing a different leader for an already
+    observed term raises ``ElectionSafetyViolation`` immediately.
+    """
+
+    def __init__(self) -> None:
+        self._leaders_by_term: dict[int, str] = {}
+
+    @property
+    def leaders_by_term(self) -> dict[int, str]:
+        return dict(self._leaders_by_term)
+
+    def observe_leader(self, *, term: int, node_id: str) -> None:
+        if term < 0:
+            raise ValueError("leader term must be non-negative")
+        existing = self._leaders_by_term.get(term)
+        if existing is not None and existing != node_id:
+            raise ElectionSafetyViolation(
+                f"Election Safety violated in term {term}: {existing!r} and {node_id!r}"
+            )
+        self._leaders_by_term[term] = node_id
+
+    def assert_cluster(self, cluster: RaftCluster) -> None:
+        for term, node_id in sorted(cluster.leaders_by_term.items()):
+            self.observe_leader(term=term, node_id=node_id)
+
+        for node_id in cluster.node_ids:
+            node = cluster.node(node_id)
+            if node.role is RaftRole.LEADER:
+                self.observe_leader(term=node.current_term, node_id=node_id)
 
 
 class LeaderCompletenessChecker:
@@ -115,16 +151,17 @@ class LeaderCompletenessChecker:
 class RaftSafetyHarness:
     """Checkpoint core Raft safety properties across deterministic lifecycles.
 
-    A checkpoint observes every currently committed leader prefix, validates all
-    recorded leaders against Leader Completeness, checks Log Matching, and
-    re-validates durable applied histories against State Machine Safety. Tests
-    and scenario runners should checkpoint after elections, replication/commit
-    advancement, state-machine application, crash/restart boundaries, and leader
-    replacement.
+    A checkpoint validates Election Safety, observes every currently committed
+    leader prefix, validates all recorded leaders against Leader Completeness,
+    checks Log Matching, and re-validates durable applied histories against
+    State Machine Safety. Tests and scenario runners should checkpoint after
+    elections, replication/commit advancement, state-machine application,
+    crash/restart boundaries, and leader replacement.
     """
 
     def __init__(self, cluster: RaftCluster) -> None:
         self.cluster = cluster
+        self.election_safety = ElectionSafetyChecker()
         self.leader_completeness = LeaderCompletenessChecker()
         self.state_machine = StateMachineApplier(cluster)
         self._observed_commit_index: dict[str, int] = {
@@ -132,6 +169,8 @@ class RaftSafetyHarness:
         }
 
     def checkpoint(self) -> None:
+        self.election_safety.assert_cluster(self.cluster)
+
         for node_id in self.cluster.node_ids:
             node = self.cluster.node(node_id)
             if node.role is not RaftRole.LEADER:
