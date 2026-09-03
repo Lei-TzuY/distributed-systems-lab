@@ -98,6 +98,7 @@ class _ScheduledDelivery:
 
 
 Handler = Callable[["Simulator", Message], None]
+RestartHandler = Callable[["Simulator"], None]
 
 
 class Simulator:
@@ -114,6 +115,7 @@ class Simulator:
         self._sequence = 0
         self._queue: list[_ScheduledDelivery] = []
         self._handlers: dict[str, Handler] = {}
+        self._restart_handlers: dict[str, RestartHandler] = {}
         self._alive: dict[str, bool] = defaultdict(lambda: True)
         self._send_ordinals: dict[tuple[str, str], int] = defaultdict(int)
         self.fault_plan = fault_plan or FaultPlan()
@@ -121,10 +123,18 @@ class Simulator:
         self.persistent_state: dict[str, dict[str, Any]] = defaultdict(dict)
         self.volatile_state: dict[str, dict[str, Any]] = defaultdict(dict)
 
-    def register(self, node: str, handler: Handler) -> None:
+    def register(
+        self,
+        node: str,
+        handler: Handler,
+        *,
+        restart_handler: RestartHandler | None = None,
+    ) -> None:
         if node in self._handlers:
             raise ValueError(f"handler already registered for node {node!r}")
         self._handlers[node] = handler
+        if restart_handler is not None:
+            self._restart_handlers[node] = restart_handler
         self._alive[node] = True
 
     def send(self, src: str, dst: str, payload: Any, *, delay: int = 1) -> None:
@@ -176,6 +186,9 @@ class Simulator:
         self._alive[node] = True
         self.volatile_state[node].clear()
         self._record("restart", node=node)
+        restart_handler = self._restart_handlers.get(node)
+        if restart_handler is not None:
+            restart_handler(self)
 
     def is_alive(self, node: str) -> bool:
         return self._alive[node]

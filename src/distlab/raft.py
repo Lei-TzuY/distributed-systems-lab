@@ -132,7 +132,11 @@ class RaftCluster:
             for node_id in node_ids
         }
         for node_id, node in self.nodes.items():
-            sim.register(node_id, node.handle_message)
+            sim.register(
+                node_id,
+                node.handle_message,
+                restart_handler=node.handle_restart,
+            )
         for node in self.nodes.values():
             node.reset_election_timeout(reason="initial")
 
@@ -233,7 +237,6 @@ class RaftNode:
 
     def advance_commit_index(self, index: int, *, source: str) -> int:
         """Monotonically advance this node's volatile commit index."""
-
         if index < 0:
             raise ValueError("commit index must be non-negative")
         if index > self.last_log_index:
@@ -273,6 +276,23 @@ class RaftNode:
             ),
             timeout,
         )
+
+    def handle_restart(self, sim: Simulator) -> None:
+        """Reconstruct Raft volatile state at the simulator restart boundary."""
+        if sim is not self.sim:
+            raise ValueError("restart callback invoked by a different simulator")
+        self._validate_persistent_log()
+        self._election_timer_generation += 1
+        self._reset_volatile_defaults()
+        self.sim._record(
+            "raft-restart",
+            node=self.node_id,
+            term=self.current_term,
+            voted_for=self.voted_for,
+            last_log_index=self.last_log_index,
+            last_log_term=self.last_log_term,
+        )
+        self.reset_election_timeout(reason="restart")
 
     def start_election(self) -> None:
         if not self.sim.is_alive(self.node_id):
