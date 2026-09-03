@@ -1,4 +1,5 @@
 from .client_history import KVClientHistory
+from .history_minimizer import HistoryMinimizationResult, NonLinearizableHistoryMinimizer
 from .kv import (
     ClientRequest,
     ClientRequestConflict,
@@ -54,6 +55,7 @@ __all__ = [
     "FaultPlan",
     "FaultRule",
     "Get",
+    "HistoryMinimizationResult",
     "InvalidHistory",
     "InvalidKVCommand",
     "Invocation",
@@ -62,6 +64,7 @@ __all__ = [
     "LogEntry",
     "LogMatchingViolation",
     "Message",
+    "NonLinearizableHistoryMinimizer",
     "OperationHistory",
     "Put",
     "RaftCluster",
