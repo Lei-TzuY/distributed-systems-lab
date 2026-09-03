@@ -1,3 +1,9 @@
+from .campaign import (
+    CampaignFailureArtifact,
+    FailureArtifactReplayMismatch,
+    ScenarioCampaignResult,
+    SeededScenarioCampaign,
+)
 from .client_history import KVClientHistory
 from .history_minimizer import HistoryMinimizationResult, NonLinearizableHistoryMinimizer
 from .kv import (
@@ -57,6 +63,7 @@ __all__ = [
     "AppendEntries",
     "AppendEntriesResponse",
     "AppliedEntry",
+    "CampaignFailureArtifact",
     "ClientOperationKind",
     "ClientRequest",
     "ClientRequestConflict",
@@ -65,6 +72,7 @@ __all__ = [
     "Completion",
     "Delete",
     "ElectionSafetyViolation",
+    "FailureArtifactReplayMismatch",
     "FaultAction",
     "FaultOpportunity",
     "FaultPlan",
@@ -91,11 +99,13 @@ __all__ = [
     "RequestVote",
     "RequestVoteResponse",
     "ScenarioAction",
+    "ScenarioCampaignResult",
     "ScenarioExecutionError",
     "SeededClientWorkloadGenerator",
     "SeededClientWorkloadSchedule",
     "SeededFaultGenerator",
     "SeededFaultSchedule",
+    "SeededScenarioCampaign",
     "Simulator",
     "SingleKeyKVLinearizabilityChecker",
     "StateMachineApplier",
