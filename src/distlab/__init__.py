@@ -43,8 +43,11 @@ from .raft import (
 from .raft_invariants import (
     CommittedEntryObservation,
     ElectionSafetyChecker,
+    LeaderAppendOnlyChecker,
+    LeaderAppendOnlyViolation,
     LeaderCompletenessChecker,
     LeaderCompletenessViolation,
+    LeaderLogObservation,
     RaftSafetyHarness,
 )
 from .randomized_faults import FaultOpportunity, SeededFaultGenerator, SeededFaultSchedule
@@ -97,8 +100,11 @@ __all__ = [
     "InvalidKVCommand",
     "Invocation",
     "KVClientHistory",
+    "LeaderAppendOnlyChecker",
+    "LeaderAppendOnlyViolation",
     "LeaderCompletenessChecker",
     "LeaderCompletenessViolation",
+    "LeaderLogObservation",
     "LinearizabilityResult",
     "LogEntry",
     "LogMatchingViolation",
