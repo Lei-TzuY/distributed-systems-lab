@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from .raft import LogEntry, RaftNode, RaftRole
@@ -9,7 +10,17 @@ class CommitRecoveryError(RuntimeError):
     """Raised when a current-term commit recovery barrier cannot be appended."""
 
 
-def append_current_term_barrier(leader: RaftNode, *, command: Any = None) -> int:
+@dataclass(frozen=True, slots=True)
+class CommitRecoveryBarrier:
+    """Internal state-machine no-op used to re-establish Raft commit knowledge."""
+
+
+_DEFAULT_BARRIER = CommitRecoveryBarrier()
+
+
+def append_current_term_barrier(
+    leader: RaftNode, *, command: Any = _DEFAULT_BARRIER
+) -> int:
     """Append one durable current-term entry to a live Raft leader.
 
     A restarted leader intentionally loses its volatile commit index. Raft does not
@@ -17,6 +28,11 @@ def append_current_term_barrier(leader: RaftNode, *, command: Any = None) -> int
     replica counts. Appending and then majority-replicating a current-term entry
     provides an explicit barrier: once that entry commits, every preceding entry in
     the leader's log is committed as part of the same prefix.
+
+    By default the barrier carries ``CommitRecoveryBarrier``, an internal no-op that
+    replicated state machines may apply without changing user-visible state. Callers
+    may still provide an explicit command when a protocol-specific current-term entry
+    is preferable.
 
     The helper only appends locally. Callers must use ``LeaderReplicator`` to drive
     deterministic majority replication and commit propagation.
