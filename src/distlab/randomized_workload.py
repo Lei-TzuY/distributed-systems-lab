@@ -10,11 +10,12 @@ class ClientOperationKind(StrEnum):
     PUT = "put"
     DELETE = "delete"
     GET = "get"
+    RETRY = "retry"
 
 
 @dataclass(frozen=True, slots=True)
 class ClientWorkloadAction:
-    """One explicit client operation in a replayable workload."""
+    """One explicit client action in a replayable workload."""
 
     operation_id: str
     client_id: str
@@ -23,6 +24,7 @@ class ClientWorkloadAction:
     key: str
     value: str | None = None
     request_id: int | None = None
+    retry_of: str | None = None
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -37,13 +39,20 @@ class ClientWorkloadAction:
             if not isinstance(self.value, str):
                 raise ValueError("put action requires a string value")
             self._validate_request_id()
+            self._validate_not_retry()
         elif self.kind is ClientOperationKind.DELETE:
             if self.value is not None:
                 raise ValueError("delete action must not carry a value")
             self._validate_request_id()
+            self._validate_not_retry()
         elif self.kind is ClientOperationKind.GET:
+            if self.value is not None or self.request_id is not None or self.retry_of is not None:
+                raise ValueError("get action must not carry value, request_id, or retry_of")
+        elif self.kind is ClientOperationKind.RETRY:
             if self.value is not None or self.request_id is not None:
-                raise ValueError("get action must not carry value or request_id")
+                raise ValueError("retry action must not carry value or request_id")
+            if not self.retry_of:
+                raise ValueError("retry action requires retry_of")
 
     def _validate_request_id(self) -> None:
         if (
@@ -52,6 +61,10 @@ class ClientWorkloadAction:
             or self.request_id <= 0
         ):
             raise ValueError("write action requires a positive integer request_id")
+
+    def _validate_not_retry(self) -> None:
+        if self.retry_of is not None:
+            raise ValueError("write action must not carry retry_of")
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +92,7 @@ class SeededClientWorkloadSchedule:
                     "key": action.key,
                     "value": action.value,
                     "request_id": action.request_id,
+                    "retry_of": action.retry_of,
                 }
                 for action in self.actions
             ],
@@ -111,6 +125,7 @@ class SeededClientWorkloadSchedule:
                     key=item["key"],
                     value=item["value"],
                     request_id=item["request_id"],
+                    retry_of=item.get("retry_of"),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError("invalid client workload action") from exc
@@ -126,6 +141,7 @@ class SeededClientWorkloadGenerator:
     values: tuple[str, ...]
     put_rate: float = 0.5
     delete_rate: float = 0.2
+    retry_rate: float = 0.0
 
     def __post_init__(self) -> None:
         for name, domain in (
@@ -138,10 +154,10 @@ class SeededClientWorkloadGenerator:
                 raise ValueError(f"{name} must contain non-empty strings")
             if len(set(domain)) != len(domain):
                 raise ValueError(f"{name} must be unique")
-        if self.put_rate < 0 or self.delete_rate < 0:
+        if self.put_rate < 0 or self.delete_rate < 0 or self.retry_rate < 0:
             raise ValueError("operation rates must be non-negative")
-        if self.put_rate + self.delete_rate > 1:
-            raise ValueError("put_rate and delete_rate must sum to at most 1")
+        if self.put_rate + self.delete_rate + self.retry_rate > 1:
+            raise ValueError("put_rate, delete_rate, and retry_rate must sum to at most 1")
 
     def compile(self, seed: int, operation_count: int) -> SeededClientWorkloadSchedule:
         if not isinstance(seed, int) or isinstance(seed, bool):
@@ -157,6 +173,7 @@ class SeededClientWorkloadGenerator:
         values = tuple(sorted(self.values))
         rng = random.Random(seed)
         next_request_id = {client: 0 for client in clients}
+        latest_write: dict[str, ClientWorkloadAction] = {}
         actions: list[ClientWorkloadAction] = []
 
         for index in range(1, operation_count + 1):
@@ -165,30 +182,45 @@ class SeededClientWorkloadGenerator:
             key = rng.choice(keys)
             sample = rng.random()
             operation_id = f"op-{index:06d}"
+            put_cutoff = self.put_rate
+            delete_cutoff = put_cutoff + self.delete_rate
+            retry_cutoff = delete_cutoff + self.retry_rate
 
-            if sample < self.put_rate:
+            if sample < put_cutoff:
                 next_request_id[client_id] += 1
-                actions.append(
-                    ClientWorkloadAction(
-                        operation_id=operation_id,
-                        client_id=client_id,
-                        node_id=node_id,
-                        kind=ClientOperationKind.PUT,
-                        key=key,
-                        value=rng.choice(values),
-                        request_id=next_request_id[client_id],
-                    )
+                action = ClientWorkloadAction(
+                    operation_id=operation_id,
+                    client_id=client_id,
+                    node_id=node_id,
+                    kind=ClientOperationKind.PUT,
+                    key=key,
+                    value=rng.choice(values),
+                    request_id=next_request_id[client_id],
                 )
-            elif sample < self.put_rate + self.delete_rate:
+                actions.append(action)
+                latest_write[client_id] = action
+            elif sample < delete_cutoff:
                 next_request_id[client_id] += 1
+                action = ClientWorkloadAction(
+                    operation_id=operation_id,
+                    client_id=client_id,
+                    node_id=node_id,
+                    kind=ClientOperationKind.DELETE,
+                    key=key,
+                    request_id=next_request_id[client_id],
+                )
+                actions.append(action)
+                latest_write[client_id] = action
+            elif sample < retry_cutoff and client_id in latest_write:
+                target = latest_write[client_id]
                 actions.append(
                     ClientWorkloadAction(
                         operation_id=operation_id,
                         client_id=client_id,
                         node_id=node_id,
-                        kind=ClientOperationKind.DELETE,
-                        key=key,
-                        request_id=next_request_id[client_id],
+                        kind=ClientOperationKind.RETRY,
+                        key=target.key,
+                        retry_of=target.operation_id,
                     )
                 )
             else:
