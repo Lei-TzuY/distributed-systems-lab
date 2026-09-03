@@ -11,6 +11,7 @@ from .randomized_faults import FaultOpportunity, SeededFaultGenerator, SeededFau
 from .randomized_workload import SeededClientWorkloadGenerator, SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioResult, ReplicatedKVScenarioRunner
 from .simulator import TraceRecord
+from .workload_minimizer import NonLinearizableClientWorkloadMinimizer
 
 
 class FailureArtifactReplayMismatch(AssertionError):
@@ -23,6 +24,9 @@ class CampaignFailureArtifact:
 
     seed: int
     workload: SeededClientWorkloadSchedule
+    minimized_workload: SeededClientWorkloadSchedule
+    kept_workload_action_indices: tuple[int, ...]
+    removed_workload_action_indices: tuple[int, ...]
     faults: SeededFaultSchedule
     minimized_faults: SeededFaultSchedule
     kept_fault_rule_indices: tuple[int, ...]
@@ -50,9 +54,18 @@ class CampaignFailureArtifact:
             node_ids=node_ids,
             leader_id=leader_id,
         )
+        minimized_workload = NonLinearizableClientWorkloadMinimizer().minimize(
+            workload,
+            minimized_faults.schedule,
+            node_ids=node_ids,
+            leader_id=leader_id,
+        )
         return cls(
             seed=workload.seed,
             workload=workload,
+            minimized_workload=minimized_workload.schedule,
+            kept_workload_action_indices=minimized_workload.kept_original_indices,
+            removed_workload_action_indices=minimized_workload.removed_original_indices,
             faults=faults,
             minimized_faults=minimized_faults.schedule,
             kept_fault_rule_indices=minimized_faults.kept_original_indices,
@@ -64,9 +77,12 @@ class CampaignFailureArtifact:
 
     def to_json(self) -> str:
         payload = {
-            "version": 2,
+            "version": 3,
             "seed": self.seed,
             "workload": json.loads(self.workload.to_json()),
+            "minimized_workload": json.loads(self.minimized_workload.to_json()),
+            "kept_workload_action_indices": list(self.kept_workload_action_indices),
+            "removed_workload_action_indices": list(self.removed_workload_action_indices),
             "faults": json.loads(self.faults.to_json()),
             "minimized_faults": json.loads(self.minimized_faults.to_json()),
             "kept_fault_rule_indices": list(self.kept_fault_rule_indices),
@@ -80,12 +96,15 @@ class CampaignFailureArtifact:
     @classmethod
     def from_json(cls, encoded: str) -> CampaignFailureArtifact:
         raw = json.loads(encoded)
-        if not isinstance(raw, dict) or raw.get("version") != 2:
+        if not isinstance(raw, dict) or raw.get("version") != 3:
             raise ValueError("unsupported campaign failure artifact format")
         seed = raw.get("seed")
         if not isinstance(seed, int) or isinstance(seed, bool):
             raise ValueError("seed must be an integer")
         workload_raw = raw.get("workload")
+        minimized_workload_raw = raw.get("minimized_workload")
+        kept_workload_actions = raw.get("kept_workload_action_indices")
+        removed_workload_actions = raw.get("removed_workload_action_indices")
         faults_raw = raw.get("faults")
         minimized_faults_raw = raw.get("minimized_faults")
         kept_fault_rules = raw.get("kept_fault_rule_indices")
@@ -95,6 +114,12 @@ class CampaignFailureArtifact:
         removed = raw.get("removed_operation_ids")
         if not isinstance(workload_raw, dict) or not isinstance(faults_raw, dict):
             raise ValueError("artifact schedules must be objects")
+        if not isinstance(minimized_workload_raw, dict):
+            raise ValueError("artifact minimized workload schedule must be an object")
+        if not _integer_list(kept_workload_actions) or not _integer_list(
+            removed_workload_actions
+        ):
+            raise ValueError("artifact workload action index lists must contain integers")
         if not isinstance(minimized_faults_raw, dict):
             raise ValueError("artifact minimized fault schedule must be an object")
         if not _integer_list(kept_fault_rules) or not _integer_list(removed_fault_rules):
@@ -105,24 +130,43 @@ class CampaignFailureArtifact:
             raise ValueError("artifact operation id lists must contain strings")
 
         workload = SeededClientWorkloadSchedule.from_json(_canonical_json(workload_raw))
+        minimized_workload = SeededClientWorkloadSchedule.from_json(
+            _canonical_json(minimized_workload_raw)
+        )
         faults = SeededFaultSchedule.from_json(_canonical_json(faults_raw))
         minimized_faults = SeededFaultSchedule.from_json(
             _canonical_json(minimized_faults_raw)
         )
-        if workload.seed != seed:
-            raise ValueError("artifact seed must match workload seed")
+        if workload.seed != seed or minimized_workload.seed != seed:
+            raise ValueError("artifact seed must match workload schedule seeds")
         if faults.seed != seed or minimized_faults.seed != seed:
             raise ValueError("artifact seed must match fault schedule seeds")
-        _validate_fault_partition(
+        _validate_index_partition(
+            len(workload.actions),
+            tuple(kept_workload_actions),
+            tuple(removed_workload_actions),
+            kind="workload action",
+        )
+        if minimized_workload.actions != tuple(
+            workload.actions[index] for index in kept_workload_actions
+        ):
+            raise ValueError(
+                "artifact minimized workload must match kept workload action indices"
+            )
+        _validate_index_partition(
             len(faults.rules),
             tuple(kept_fault_rules),
             tuple(removed_fault_rules),
+            kind="fault rule",
         )
         if minimized_faults.rules != tuple(faults.rules[index] for index in kept_fault_rules):
             raise ValueError("artifact minimized faults must match kept fault rule indices")
         return cls(
             seed=seed,
             workload=workload,
+            minimized_workload=minimized_workload,
+            kept_workload_action_indices=tuple(kept_workload_actions),
+            removed_workload_action_indices=tuple(removed_workload_actions),
             faults=faults,
             minimized_faults=minimized_faults,
             kept_fault_rule_indices=tuple(kept_fault_rules),
@@ -167,14 +211,29 @@ class CampaignFailureArtifact:
         if minimized_faults.removed_original_indices != self.removed_fault_rule_indices:
             raise FailureArtifactReplayMismatch("removed fault rule set changed during replay")
 
-        minimized_result = ReplicatedKVScenarioRunner(
+        minimized_workload = NonLinearizableClientWorkloadMinimizer().minimize(
             self.workload,
+            self.minimized_faults,
+            node_ids=node_ids,
+            leader_id=leader_id,
+        )
+        if minimized_workload.schedule != self.minimized_workload:
+            raise FailureArtifactReplayMismatch("minimized workload changed during replay")
+        if minimized_workload.kept_original_indices != self.kept_workload_action_indices:
+            raise FailureArtifactReplayMismatch("kept workload action set changed during replay")
+        if minimized_workload.removed_original_indices != self.removed_workload_action_indices:
+            raise FailureArtifactReplayMismatch("removed workload action set changed during replay")
+
+        minimized_result = ReplicatedKVScenarioRunner(
+            self.minimized_workload,
             self.minimized_faults,
             node_ids=node_ids,
             leader_id=leader_id,
         ).run()
         if minimized_result.linearizability.linearizable:
-            raise FailureArtifactReplayMismatch("minimized fault replay became linearizable")
+            raise FailureArtifactReplayMismatch(
+                "minimized executable scenario became linearizable"
+            )
         return result
 
 
@@ -277,15 +336,17 @@ def _integer_list(value: Any) -> bool:
     )
 
 
-def _validate_fault_partition(
-    rule_count: int,
+def _validate_index_partition(
+    item_count: int,
     kept: tuple[int, ...],
     removed: tuple[int, ...],
+    *,
+    kind: str,
 ) -> None:
     all_indices = kept + removed
     if len(set(all_indices)) != len(all_indices):
-        raise ValueError("artifact fault rule indices must be unique")
-    if any(index < 0 or index >= rule_count for index in all_indices):
-        raise ValueError("artifact fault rule index out of range")
-    if set(all_indices) != set(range(rule_count)):
-        raise ValueError("artifact fault rule indices must partition original rules")
+        raise ValueError(f"artifact {kind} indices must be unique")
+    if any(index < 0 or index >= item_count for index in all_indices):
+        raise ValueError(f"artifact {kind} index out of range")
+    if set(all_indices) != set(range(item_count)):
+        raise ValueError(f"artifact {kind} indices must partition original items")
