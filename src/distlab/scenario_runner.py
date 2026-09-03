@@ -100,7 +100,9 @@ class ReplicatedKVScenarioRunner:
                     )
                     continue
                 if request.client_id != action.client_id:
-                    raise ScenarioExecutionError("retry action client does not match original write")
+                    raise ScenarioExecutionError(
+                        "retry action client does not match original write"
+                    )
                 request = clients.retry_write(action.retry_of)
                 self._drive_write_attempt(
                     leader,
