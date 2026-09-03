@@ -94,7 +94,7 @@ class StateMachineApplier:
         return tuple(applied_now)
 
     def assert_state_machine_safety(self) -> None:
-        """Re-check every applied history against State Machine Safety."""
+        """Re-check volatile and durable applied histories against Raft safety."""
 
         seen: dict[int, AppliedEntry] = {}
         for node_id in self.cluster.node_ids:
@@ -114,6 +114,14 @@ class StateMachineApplier:
                     )
                 seen.setdefault(record.index, record)
                 expected_index += 1
+
+            durable = self._load_durable_history(node_id)
+            applied = self.applied_entries(node_id)
+            if durable != applied:
+                raise StateMachineSafetyViolation(
+                    "durable state-machine history changed after application for "
+                    f"{node_id!r}: observed {applied!r}, now {durable!r}"
+                )
 
     def _load_durable_history(self, node_id: str) -> tuple[LogEntry, ...]:
         persistent = self.sim.persistent_state[node_id]

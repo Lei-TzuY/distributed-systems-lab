@@ -1,6 +1,7 @@
 import pytest
 
 from distlab.raft import LogEntry, RaftCluster, RaftRole
+from distlab.raft_invariants import RaftSafetyHarness
 from distlab.replication import LeaderReplicator
 from distlab.simulator import Simulator
 from distlab.state_machine import StateMachineApplier, StateMachineSafetyViolation
@@ -156,6 +157,45 @@ def test_state_machine_safety_rejects_different_entry_at_same_applied_index() ->
     assert applier.apply_committed("n1")
     with pytest.raises(StateMachineSafetyViolation, match="State Machine Safety violated"):
         applier.apply_committed("n2")
+
+
+def test_safety_harness_checks_state_machine_after_application() -> None:
+    log = (
+        LogEntry(term=2, command="old"),
+        LogEntry(term=3, command="new"),
+    )
+    _, cluster, replicator = _elect_leader_with_log(log)
+    harness = RaftSafetyHarness(cluster)
+
+    assert replicator.replicate("n2") is True
+    assert harness.state_machine.apply_committed("n1")
+    harness.checkpoint()
+
+    assert replicator.replicate("n2") is True
+    assert harness.state_machine.apply_committed("n2")
+    harness.checkpoint()
+    assert harness.state_machine.applied_entries("n1") == log
+    assert harness.state_machine.applied_entries("n2") == log
+
+
+def test_safety_harness_rejects_durable_applied_history_mutation_after_restart() -> None:
+    log = (LogEntry(term=3, command="stable"),)
+    sim, cluster, replicator = _elect_leader_with_log(log, node_ids=("n1", "n2", "n3"))
+    harness = RaftSafetyHarness(cluster)
+
+    assert replicator.replicate("n2") is True
+    assert harness.state_machine.apply_committed("n1")
+    harness.checkpoint()
+
+    sim.crash("n1")
+    sim.restart("n1")
+    harness.checkpoint()
+    sim.persistent_state["n1"]["state_machine_applied"] = (
+        LogEntry(term=3, command="corrupt"),
+    )
+
+    with pytest.raises(StateMachineSafetyViolation, match="diverges from the persistent Raft log"):
+        harness.checkpoint()
 
 
 def test_unknown_node_is_rejected() -> None:

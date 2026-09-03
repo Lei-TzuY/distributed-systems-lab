@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .raft import LogEntry, RaftCluster, RaftNode, RaftRole
+from .state_machine import StateMachineApplier
 
 
 class LeaderCompletenessViolation(AssertionError):
@@ -115,14 +116,17 @@ class RaftSafetyHarness:
     """Checkpoint core Raft safety properties across deterministic lifecycles.
 
     A checkpoint observes every currently committed leader prefix, validates all
-    recorded leaders against Leader Completeness, and checks Log Matching. Tests
+    recorded leaders against Leader Completeness, checks Log Matching, and
+    re-validates durable applied histories against State Machine Safety. Tests
     and scenario runners should checkpoint after elections, replication/commit
-    advancement, crash/restart boundaries, and leader replacement.
+    advancement, state-machine application, crash/restart boundaries, and leader
+    replacement.
     """
 
     def __init__(self, cluster: RaftCluster) -> None:
         self.cluster = cluster
         self.leader_completeness = LeaderCompletenessChecker()
+        self.state_machine = StateMachineApplier(cluster)
         self._observed_commit_index: dict[str, int] = {
             node_id: 0 for node_id in cluster.node_ids
         }
@@ -143,3 +147,4 @@ class RaftSafetyHarness:
 
         self.leader_completeness.assert_recorded_leaders(self.cluster)
         self.cluster.assert_log_matching()
+        self.state_machine.assert_state_machine_safety()
