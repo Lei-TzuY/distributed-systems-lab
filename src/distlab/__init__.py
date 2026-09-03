@@ -40,6 +40,11 @@ from .raft import (
     RequestVote,
     RequestVoteResponse,
 )
+from .raft_invariants import (
+    CommittedEntryObservation,
+    LeaderCompletenessChecker,
+    LeaderCompletenessViolation,
+)
 from .randomized_faults import FaultOpportunity, SeededFaultGenerator, SeededFaultSchedule
 from .randomized_workload import (
     ClientOperationKind,
@@ -72,6 +77,7 @@ __all__ = [
     "ClientRequest",
     "ClientRequestConflict",
     "ClientWorkloadAction",
+    "CommittedEntryObservation",
     "CompletedOperation",
     "Completion",
     "Delete",
@@ -88,6 +94,8 @@ __all__ = [
     "InvalidKVCommand",
     "Invocation",
     "KVClientHistory",
+    "LeaderCompletenessChecker",
+    "LeaderCompletenessViolation",
     "LinearizabilityResult",
     "LogEntry",
     "LogMatchingViolation",
