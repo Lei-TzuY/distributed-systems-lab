@@ -84,6 +84,7 @@ def test_failure_artifact_rejects_workload_index_partition_mismatch() -> None:
     failure = _stale_read_campaign().run((2,)).failure
     assert failure is not None
     raw = json.loads(failure.to_json())
+    raw["kept_workload_action_indices"] = raw["kept_workload_action_indices"][:-1]
     raw["removed_workload_action_indices"] = []
 
     try:
