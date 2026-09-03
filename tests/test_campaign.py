@@ -36,6 +36,13 @@ def test_campaign_captures_first_failure_and_exactly_replays_artifact() -> None:
     assert result.attempted_seeds == (2,)
     assert result.failure is not None
     assert result.failure.minimized_operation_ids == ("op-000001", "op-000002")
+    assert result.failure.minimized_faults.rules == tuple(
+        result.failure.faults.rules[index]
+        for index in result.failure.kept_fault_rule_indices
+    )
+    assert set(result.failure.kept_fault_rule_indices) | set(
+        result.failure.removed_fault_rule_indices
+    ) == set(range(len(result.failure.faults.rules)))
     replay = result.failure.replay()
     assert not replay.linearizability.linearizable
     assert replay.snapshots["n1"] == {"x": "one"}
@@ -48,11 +55,29 @@ def test_failure_artifact_json_round_trip_is_canonical_and_replayable() -> None:
 
     encoded = failure.to_json()
     restored = CampaignFailureArtifact.from_json(encoded)
+    raw = json.loads(encoded)
 
     assert restored.to_json() == encoded
-    assert json.loads(encoded)["version"] == 1
+    assert raw["version"] == 2
+    assert raw["minimized_faults"] == json.loads(failure.minimized_faults.to_json())
+    assert raw["kept_fault_rule_indices"] == list(failure.kept_fault_rule_indices)
+    assert raw["removed_fault_rule_indices"] == list(failure.removed_fault_rule_indices)
     assert restored.trace_json == failure.trace_json
     assert restored.replay().trace
+
+
+def test_failure_artifact_rejects_fault_index_partition_mismatch() -> None:
+    failure = _stale_read_campaign().run((2,)).failure
+    assert failure is not None
+    raw = json.loads(failure.to_json())
+    raw["removed_fault_rule_indices"] = []
+
+    try:
+        CampaignFailureArtifact.from_json(json.dumps(raw))
+    except ValueError as exc:
+        assert "partition" in str(exc)
+    else:
+        raise AssertionError("incomplete fault index partition must be rejected")
 
 
 def test_campaign_without_failure_records_every_attempted_seed() -> None:
