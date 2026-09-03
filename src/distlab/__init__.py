@@ -42,6 +42,7 @@ from .raft import (
 )
 from .raft_invariants import (
     CommittedEntryObservation,
+    ElectionSafetyChecker,
     LeaderCompletenessChecker,
     LeaderCompletenessViolation,
     RaftSafetyHarness,
@@ -82,6 +83,7 @@ __all__ = [
     "CompletedOperation",
     "Completion",
     "Delete",
+    "ElectionSafetyChecker",
     "ElectionSafetyViolation",
     "FailureArtifactReplayMismatch",
     "FaultAction",
