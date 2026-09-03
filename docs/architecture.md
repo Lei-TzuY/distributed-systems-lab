@@ -30,7 +30,13 @@ The current foundation supports:
 - delay by a deterministic logical-time delta
 - duplicate with a deterministic second-delivery delta
 
-Randomized fault generation is intentionally deferred. When introduced, it must compile a seed into an explicit fault schedule that can be persisted and replayed.
+### Seeded randomized fault schedules
+
+Randomized exploration is separated from replay. `SeededFaultGenerator` accepts an integer seed plus a bounded set of concrete `FaultOpportunity` values and compiles them into a `SeededFaultSchedule`. Opportunities are canonicalized before PRNG consumption, so the same seed and same opportunity set produce the same rules independent of caller iteration order.
+
+The generated schedule contains only explicit `FaultRule` values. It can be serialized to a versioned canonical JSON representation and later reconstructed with `SeededFaultSchedule.from_json()`. Exact replay uses the reconstructed `FaultPlan`; it never re-runs random generation. This keeps a randomized failure reproducible even when the exploration code path is no longer involved.
+
+The generator intentionally does not discover message opportunities dynamically or randomize client operations yet. A test must declare the bounded message ordinals eligible for faults. Later randomized client/fault workloads should compile the entire seed into explicit scenario actions plus this persisted fault schedule before execution.
 
 ### Crash semantics
 
@@ -70,10 +76,9 @@ Client identity, request deduplication, linearizability histories, snapshots, an
 
 The intended sequence is now:
 
-1. client request identity and durable deduplication semantics
-2. replicated KV client history capture
-3. linearizability checker and failing-history minimization
-4. snapshot/install-snapshot correctness and recovery
-5. membership changes with explicit safety invariants
+1. compile bounded seeded client/fault workloads into explicit replay artifacts
+2. connect replayed randomized workloads to the linearizability checker and minimized witnesses
+3. snapshot/install-snapshot correctness and recovery
+4. membership changes with explicit safety invariants
 
 No additional consensus protocol should be introduced before the Raft safety harness is mature.
