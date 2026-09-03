@@ -10,6 +10,7 @@ from .linearizability import (
     SingleKeyKVLinearizabilityChecker,
 )
 from .raft import LogEntry, RaftCluster, RaftRole
+from .raft_invariants import RaftSafetyHarness
 from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import ClientOperationKind, SeededClientWorkloadSchedule
 from .replication import LeaderReplicator, ReplicationResponseMissing
@@ -62,6 +63,7 @@ class ReplicatedKVScenarioRunner:
     def run(self) -> ReplicatedKVScenarioResult:
         sim = Simulator(fault_plan=self.faults.to_fault_plan())
         cluster = RaftCluster(sim, self.node_ids)
+        safety = RaftSafetyHarness(cluster)
         leader = cluster.node(self.leader_id)
         leader.start_election()
         sim.run()
@@ -69,6 +71,7 @@ class ReplicatedKVScenarioRunner:
             raise ScenarioExecutionError(
                 "configured leader could not win the deterministic election"
             )
+        safety.checkpoint()
 
         replicator = LeaderReplicator(leader)
         kv = ReplicatedKV(cluster)
@@ -98,7 +101,9 @@ class ReplicatedKVScenarioRunner:
             )
             self._append_to_leader(leader, request)
             self._replicate_round(replicator)
+            safety.checkpoint()
             self._replicate_round(replicator)
+            safety.checkpoint()
             for node_id in self.node_ids:
                 kv.apply_committed(node_id)
             if kv.has_applied_request(
@@ -108,7 +113,6 @@ class ReplicatedKVScenarioRunner:
             ):
                 clients.complete_write(action.operation_id, action.node_id)
 
-            cluster.assert_log_matching()
             kv.assert_replica_consistency()
 
         linearizability = SingleKeyKVLinearizabilityChecker().check(clients.history)
