@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .client_history import KVClientHistory
 from .kv import ClientRequest, Delete, Put, ReplicatedKV
+from .lifecycle import NodeLifecycleKind, SeededLifecycleSchedule
 from .linearizability import (
     LinearizabilityResult,
     OperationHistory,
@@ -30,11 +31,11 @@ class ReplicatedKVScenarioResult:
 
 
 class ReplicatedKVScenarioRunner:
-    """Replay explicit client and fault schedules through a small Raft/KV cluster.
+    """Replay explicit client, lifecycle, and fault schedules through Raft/KV.
 
     The runner is intentionally bounded to the current single-key linearizability
-    foundation. Randomness is never consulted here: both workload and fault input
-    must already be compiled into explicit schedules.
+    foundation. Randomness is never consulted here: workload, lifecycle, and
+    fault inputs must already be compiled into explicit schedules.
     """
 
     def __init__(
@@ -42,6 +43,7 @@ class ReplicatedKVScenarioRunner:
         workload: SeededClientWorkloadSchedule,
         faults: SeededFaultSchedule,
         *,
+        lifecycle: SeededLifecycleSchedule | None = None,
         node_ids: tuple[str, ...] = ("n1", "n2", "n3"),
         leader_id: str = "n1",
     ) -> None:
@@ -55,8 +57,26 @@ class ReplicatedKVScenarioRunner:
         keys = {action.key for action in workload.actions}
         if len(keys) > 1:
             raise ValueError("scenario runner currently supports a single KV key")
+
+        lifecycle = lifecycle or SeededLifecycleSchedule.empty(workload.seed)
+        if lifecycle.seed != workload.seed or faults.seed != workload.seed:
+            raise ValueError("workload, lifecycle, and fault schedules must share a seed")
+        unknown_lifecycle = sorted(
+            {action.node_id for action in lifecycle.actions} - set(node_ids)
+        )
+        if unknown_lifecycle:
+            raise ValueError(
+                f"lifecycle schedule references unknown nodes: {unknown_lifecycle!r}"
+            )
+        if any(
+            action.before_action_index > len(workload.actions)
+            for action in lifecycle.actions
+        ):
+            raise ValueError("lifecycle action references a workload boundary out of range")
+
         self.workload = workload
         self.faults = faults
+        self.lifecycle = lifecycle
         self.node_ids = node_ids
         self.leader_id = leader_id
 
@@ -76,8 +96,15 @@ class ReplicatedKVScenarioRunner:
         replicator = LeaderReplicator(leader)
         kv = ReplicatedKV(cluster, applier=safety.state_machine)
         clients = KVClientHistory(kv)
+        lifecycle_position = 0
 
-        for action in self.workload.actions:
+        for action_index, action in enumerate(self.workload.actions):
+            lifecycle_position = self._apply_lifecycle_boundary(
+                action_index,
+                lifecycle_position,
+                sim,
+                safety,
+            )
             if action.kind is ClientOperationKind.GET:
                 clients.read(
                     action.operation_id,
@@ -139,6 +166,12 @@ class ReplicatedKVScenarioRunner:
                 request,
             )
 
+        self._apply_lifecycle_boundary(
+            len(self.workload.actions),
+            lifecycle_position,
+            sim,
+            safety,
+        )
         linearizability = SingleKeyKVLinearizabilityChecker().check(clients.history)
         return ReplicatedKVScenarioResult(
             history=clients.history,
@@ -146,6 +179,40 @@ class ReplicatedKVScenarioRunner:
             trace=tuple(sim.trace),
             snapshots={node_id: kv.snapshot(node_id) for node_id in self.node_ids},
         )
+
+    def _apply_lifecycle_boundary(
+        self,
+        boundary: int,
+        position: int,
+        sim: Simulator,
+        safety: RaftSafetyHarness,
+    ) -> int:
+        while position < len(self.lifecycle.actions):
+            action = self.lifecycle.actions[position]
+            if action.before_action_index != boundary:
+                break
+            if action.kind is NodeLifecycleKind.CRASH:
+                if not sim.is_alive(action.node_id):
+                    raise ScenarioExecutionError(
+                        f"cannot crash already crashed node {action.node_id!r}"
+                    )
+                sim.crash(action.node_id)
+            else:
+                if sim.is_alive(action.node_id):
+                    raise ScenarioExecutionError(
+                        f"cannot restart live node {action.node_id!r}"
+                    )
+                sim.restart(action.node_id)
+            sim._record(
+                "scenario-lifecycle",
+                action_id=action.action_id,
+                node=action.node_id,
+                action=action.kind.value,
+                before_action_index=boundary,
+            )
+            safety.checkpoint()
+            position += 1
+        return position
 
     def _drive_write_attempt(
         self,
@@ -164,7 +231,8 @@ class ReplicatedKVScenarioRunner:
         self._replicate_round(replicator)
         safety.checkpoint()
         for node_id in self.node_ids:
-            kv.apply_committed(node_id)
+            if leader.sim.is_alive(node_id):
+                kv.apply_committed(node_id)
         safety.checkpoint()
         if kv.has_applied_request(
             response_node,
