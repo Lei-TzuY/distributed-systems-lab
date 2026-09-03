@@ -31,6 +31,12 @@ from .raft import (
     RequestVoteResponse,
 )
 from .randomized_faults import FaultOpportunity, SeededFaultGenerator, SeededFaultSchedule
+from .randomized_workload import (
+    ClientOperationKind,
+    ClientWorkloadAction,
+    SeededClientWorkloadGenerator,
+    SeededClientWorkloadSchedule,
+)
 from .simulator import (
     FaultAction,
     FaultPlan,
@@ -46,8 +52,10 @@ __all__ = [
     "AppendEntries",
     "AppendEntriesResponse",
     "AppliedEntry",
+    "ClientOperationKind",
     "ClientRequest",
     "ClientRequestConflict",
+    "ClientWorkloadAction",
     "CompletedOperation",
     "Completion",
     "Delete",
@@ -76,6 +84,8 @@ __all__ = [
     "RequestVote",
     "RequestVoteResponse",
     "ScenarioAction",
+    "SeededClientWorkloadGenerator",
+    "SeededClientWorkloadSchedule",
     "SeededFaultGenerator",
     "SeededFaultSchedule",
     "Simulator",
