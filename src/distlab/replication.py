@@ -126,6 +126,43 @@ class LeaderReplicator:
 
         return False
 
+    def recover_peer(self, peer: str, *, max_attempts: int | None = None) -> bool:
+        """Drive a restarted or stale follower to the leader's current durable prefix.
+
+        Recovery is complete once the follower has acknowledged the leader's full
+        current log prefix and has observed the leader's current commit index. The
+        latter may require one extra heartbeat because a successful replication can
+        advance the leader commit only after the follower has processed that probe.
+        """
+        self._require_peer(peer)
+        if max_attempts is not None and max_attempts <= 0:
+            raise ValueError("max_attempts must be positive when provided")
+
+        attempts = 0
+        while max_attempts is None or attempts < max_attempts:
+            self._require_current_leader()
+            follower = self.leader.cluster.node(peer)
+            progress = self._progress[peer]
+            target_commit = min(self._commit_index, self.leader.last_log_index)
+            if (
+                progress.match_index >= self.leader.last_log_index
+                and follower.commit_index >= target_commit
+            ):
+                self.sim._record(
+                    "raft-peer-recovered",
+                    leader=self.leader.node_id,
+                    follower=peer,
+                    term=self._term,
+                    match_index=progress.match_index,
+                    commit_index=follower.commit_index,
+                )
+                return True
+
+            attempts += 1
+            self.replicate(peer, max_attempts=1)
+
+        return False
+
     def advance_commit_index(self) -> int:
         self._require_current_leader()
         majority = len(self.leader.cluster.node_ids) // 2 + 1
