@@ -68,7 +68,10 @@ def test_seeded_generator_can_emit_replayable_retry_attempts() -> None:
         for action in schedule.actions
         if action.kind in (ClientOperationKind.PUT, ClientOperationKind.DELETE)
     }
-    for retry in (action for action in schedule.actions if action.kind is ClientOperationKind.RETRY):
+    retries = (
+        action for action in schedule.actions if action.kind is ClientOperationKind.RETRY
+    )
+    for retry in retries:
         assert retry.retry_of in writes
         assert writes[retry.retry_of].client_id == retry.client_id
         assert writes[retry.retry_of].key == retry.key
