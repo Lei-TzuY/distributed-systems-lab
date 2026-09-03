@@ -37,6 +37,11 @@ from .randomized_workload import (
     SeededClientWorkloadGenerator,
     SeededClientWorkloadSchedule,
 )
+from .scenario_runner import (
+    ReplicatedKVScenarioResult,
+    ReplicatedKVScenarioRunner,
+    ScenarioExecutionError,
+)
 from .simulator import (
     FaultAction,
     FaultPlan,
@@ -81,9 +86,12 @@ __all__ = [
     "RaftNode",
     "RaftRole",
     "ReplicatedKV",
+    "ReplicatedKVScenarioResult",
+    "ReplicatedKVScenarioRunner",
     "RequestVote",
     "RequestVoteResponse",
     "ScenarioAction",
+    "ScenarioExecutionError",
     "SeededClientWorkloadGenerator",
     "SeededClientWorkloadSchedule",
     "SeededFaultGenerator",
