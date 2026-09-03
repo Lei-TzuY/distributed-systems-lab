@@ -6,6 +6,10 @@ from .raft import ElectionSafetyViolation, LogEntry, RaftCluster, RaftNode, Raft
 from .state_machine import StateMachineApplier
 
 
+class LeaderAppendOnlyViolation(AssertionError):
+    """Raised when a leader deletes or overwrites an entry from its observed log."""
+
+
 class LeaderCompletenessViolation(AssertionError):
     """Raised when a higher-term leader is missing an observed committed entry."""
 
@@ -16,6 +20,13 @@ class CommittedEntryObservation:
     entry: LogEntry
     committed_in_term: int
     leader_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class LeaderLogObservation:
+    term: int
+    leader_id: str
+    log: tuple[LogEntry, ...]
 
 
 class ElectionSafetyChecker:
@@ -52,6 +63,54 @@ class ElectionSafetyChecker:
             node = cluster.node(node_id)
             if node.role is RaftRole.LEADER:
                 self.observe_leader(term=node.current_term, node_id=node_id)
+
+
+class LeaderAppendOnlyChecker:
+    """Executable Leader Append-Only assertion across leader checkpoints.
+
+    For each observed ``(term, leader)`` epoch, the checker remembers the longest
+    log seen while that node exposes the leader role. Later checkpoints in the same
+    leadership epoch must retain that entire prefix. Former leaders are not checked
+    after stepping down because Raft followers may legitimately replace uncommitted
+    suffixes through AppendEntries conflict resolution.
+    """
+
+    def __init__(self) -> None:
+        self._logs_by_leadership: dict[tuple[int, str], tuple[LogEntry, ...]] = {}
+
+    @property
+    def observations(self) -> tuple[LeaderLogObservation, ...]:
+        return tuple(
+            LeaderLogObservation(term=term, leader_id=leader_id, log=log)
+            for (term, leader_id), log in sorted(self._logs_by_leadership.items())
+        )
+
+    def observe_leader(self, leader: RaftNode) -> None:
+        if leader.role is not RaftRole.LEADER:
+            raise ValueError("node must currently be a leader")
+        key = (leader.current_term, leader.node_id)
+        current = leader.log
+        previous = self._logs_by_leadership.get(key)
+        if previous is not None:
+            if len(current) < len(previous):
+                raise LeaderAppendOnlyViolation(
+                    "Leader Append-Only violated: "
+                    f"leader {leader.node_id!r} in term {leader.current_term} "
+                    f"shrunk its log from {len(previous)} to {len(current)} entries"
+                )
+            if current[: len(previous)] != previous:
+                raise LeaderAppendOnlyViolation(
+                    "Leader Append-Only violated: "
+                    f"leader {leader.node_id!r} in term {leader.current_term} "
+                    "overwrote an entry in its previously observed log prefix"
+                )
+        self._logs_by_leadership[key] = current
+
+    def assert_cluster(self, cluster: RaftCluster) -> None:
+        for node_id in cluster.node_ids:
+            node = cluster.node(node_id)
+            if node.role is RaftRole.LEADER:
+                self.observe_leader(node)
 
 
 class LeaderCompletenessChecker:
@@ -151,17 +210,18 @@ class LeaderCompletenessChecker:
 class RaftSafetyHarness:
     """Checkpoint core Raft safety properties across deterministic lifecycles.
 
-    A checkpoint validates Election Safety, observes every currently committed
-    leader prefix, validates all recorded leaders against Leader Completeness,
-    checks Log Matching, and re-validates durable applied histories against
-    State Machine Safety. Tests and scenario runners should checkpoint after
-    elections, replication/commit advancement, state-machine application,
-    crash/restart boundaries, and leader replacement.
+    A checkpoint validates Election Safety and Leader Append-Only, observes every
+    currently committed leader prefix, validates all recorded leaders against
+    Leader Completeness, checks Log Matching, and re-validates durable applied
+    histories against State Machine Safety. Tests and scenario runners should
+    checkpoint after elections, leader appends, replication/commit advancement,
+    state-machine application, crash/restart boundaries, and leader replacement.
     """
 
     def __init__(self, cluster: RaftCluster) -> None:
         self.cluster = cluster
         self.election_safety = ElectionSafetyChecker()
+        self.leader_append_only = LeaderAppendOnlyChecker()
         self.leader_completeness = LeaderCompletenessChecker()
         self.state_machine = StateMachineApplier(cluster)
         self._observed_commit_index: dict[str, int] = {
@@ -170,6 +230,7 @@ class RaftSafetyHarness:
 
     def checkpoint(self) -> None:
         self.election_safety.assert_cluster(self.cluster)
+        self.leader_append_only.assert_cluster(self.cluster)
 
         for node_id in self.cluster.node_ids:
             node = self.cluster.node(node_id)
