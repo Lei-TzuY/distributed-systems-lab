@@ -74,7 +74,7 @@ class ReplicatedKVScenarioRunner:
         safety.checkpoint()
 
         replicator = LeaderReplicator(leader)
-        kv = ReplicatedKV(cluster)
+        kv = ReplicatedKV(cluster, applier=safety.state_machine)
         clients = KVClientHistory(kv)
 
         for action in self.workload.actions:
@@ -106,6 +106,7 @@ class ReplicatedKVScenarioRunner:
             safety.checkpoint()
             for node_id in self.node_ids:
                 kv.apply_committed(node_id)
+            safety.checkpoint()
             if kv.has_applied_request(
                 action.node_id,
                 action.client_id,
