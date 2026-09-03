@@ -87,6 +87,35 @@ class ReplicatedKVScenarioRunner:
                 )
                 continue
 
+            if action.kind is ClientOperationKind.RETRY:
+                assert action.retry_of is not None
+                request = clients.pending_write(action.retry_of)
+                if request is None:
+                    sim._record(
+                        "client-retry-suppressed",
+                        attempt_operation_id=action.operation_id,
+                        retry_of=action.retry_of,
+                        client_id=action.client_id,
+                        node=action.node_id,
+                    )
+                    continue
+                if request.client_id != action.client_id:
+                    raise ScenarioExecutionError(
+                        "retry action client does not match original write"
+                    )
+                request = clients.retry_write(action.retry_of)
+                self._drive_write_attempt(
+                    leader,
+                    replicator,
+                    safety,
+                    kv,
+                    clients,
+                    action.retry_of,
+                    action.node_id,
+                    request,
+                )
+                continue
+
             operation = (
                 Put(action.key, action.value)
                 if action.kind is ClientOperationKind.PUT
@@ -99,22 +128,16 @@ class ReplicatedKVScenarioRunner:
                 action.request_id,
                 operation,
             )
-            self._append_to_leader(leader, request)
-            self._replicate_round(replicator)
-            safety.checkpoint()
-            self._replicate_round(replicator)
-            safety.checkpoint()
-            for node_id in self.node_ids:
-                kv.apply_committed(node_id)
-            safety.checkpoint()
-            if kv.has_applied_request(
+            self._drive_write_attempt(
+                leader,
+                replicator,
+                safety,
+                kv,
+                clients,
+                action.operation_id,
                 action.node_id,
-                action.client_id,
-                action.request_id,
-            ):
-                clients.complete_write(action.operation_id, action.node_id)
-
-            kv.assert_replica_consistency()
+                request,
+            )
 
         linearizability = SingleKeyKVLinearizabilityChecker().check(clients.history)
         return ReplicatedKVScenarioResult(
@@ -123,6 +146,34 @@ class ReplicatedKVScenarioRunner:
             trace=tuple(sim.trace),
             snapshots={node_id: kv.snapshot(node_id) for node_id in self.node_ids},
         )
+
+    def _drive_write_attempt(
+        self,
+        leader,
+        replicator: LeaderReplicator,
+        safety: RaftSafetyHarness,
+        kv: ReplicatedKV,
+        clients: KVClientHistory,
+        operation_id: str,
+        response_node: str,
+        request: ClientRequest,
+    ) -> None:
+        self._append_to_leader(leader, request)
+        self._replicate_round(replicator)
+        safety.checkpoint()
+        self._replicate_round(replicator)
+        safety.checkpoint()
+        for node_id in self.node_ids:
+            kv.apply_committed(node_id)
+        safety.checkpoint()
+        if kv.has_applied_request(
+            response_node,
+            request.client_id,
+            request.request_id,
+        ):
+            clients.complete_write(operation_id, response_node)
+
+        kv.assert_replica_consistency()
 
     @staticmethod
     def _append_to_leader(leader, request: ClientRequest) -> None:
