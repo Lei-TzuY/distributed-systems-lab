@@ -109,3 +109,37 @@ class LeaderCompletenessChecker:
                 node_id=node_id,
                 log=cluster.node(node_id).log,
             )
+
+
+class RaftSafetyHarness:
+    """Checkpoint core Raft safety properties across deterministic lifecycles.
+
+    A checkpoint observes every currently committed leader prefix, validates all
+    recorded leaders against Leader Completeness, and checks Log Matching. Tests
+    and scenario runners should checkpoint after elections, replication/commit
+    advancement, crash/restart boundaries, and leader replacement.
+    """
+
+    def __init__(self, cluster: RaftCluster) -> None:
+        self.cluster = cluster
+        self.leader_completeness = LeaderCompletenessChecker()
+        self._observed_commit_index: dict[str, int] = {
+            node_id: 0 for node_id in cluster.node_ids
+        }
+
+    def checkpoint(self) -> None:
+        for node_id in self.cluster.node_ids:
+            node = self.cluster.node(node_id)
+            if node.role is not RaftRole.LEADER:
+                continue
+            previous_commit_index = self._observed_commit_index[node_id]
+            if node.commit_index < previous_commit_index:
+                previous_commit_index = 0
+            self.leader_completeness.observe_commit(
+                node,
+                previous_commit_index=previous_commit_index,
+            )
+            self._observed_commit_index[node_id] = node.commit_index
+
+        self.leader_completeness.assert_recorded_leaders(self.cluster)
+        self.cluster.assert_log_matching()

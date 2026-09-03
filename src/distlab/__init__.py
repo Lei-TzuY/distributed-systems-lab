@@ -44,6 +44,7 @@ from .raft_invariants import (
     CommittedEntryObservation,
     LeaderCompletenessChecker,
     LeaderCompletenessViolation,
+    RaftSafetyHarness,
 )
 from .randomized_faults import FaultOpportunity, SeededFaultGenerator, SeededFaultSchedule
 from .randomized_workload import (
@@ -107,6 +108,7 @@ __all__ = [
     "RaftCluster",
     "RaftNode",
     "RaftRole",
+    "RaftSafetyHarness",
     "ReplicatedKV",
     "ReplicatedKVScenarioResult",
     "ReplicatedKVScenarioRunner",

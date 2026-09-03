@@ -1,7 +1,11 @@
 import pytest
 
 from distlab.raft import LogEntry, RaftCluster, RaftRole
-from distlab.raft_invariants import LeaderCompletenessChecker, LeaderCompletenessViolation
+from distlab.raft_invariants import (
+    LeaderCompletenessChecker,
+    LeaderCompletenessViolation,
+    RaftSafetyHarness,
+)
 from distlab.replication import LeaderReplicator
 from distlab.simulator import Simulator
 
@@ -105,3 +109,36 @@ def test_reobserving_a_changed_committed_entry_is_rejected() -> None:
 
     with pytest.raises(LeaderCompletenessViolation, match="committed entry changed"):
         checker.observe_commit(leader)
+
+
+def test_safety_harness_tracks_commit_across_crash_and_leader_replacement() -> None:
+    sim, cluster, _ = _committed_leader()
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+
+    sim.crash("n1")
+    harness.checkpoint()
+    replacement = cluster.node("n2")
+    replacement.start_election()
+    sim.run()
+
+    assert replacement.role is RaftRole.LEADER
+    assert replacement.current_term == 4
+    harness.checkpoint()
+    assert [record.index for record in harness.leader_completeness.committed_entries] == [1, 2]
+
+
+def test_safety_harness_rejects_corrupt_replacement_leader_at_checkpoint() -> None:
+    sim, cluster, _ = _committed_leader()
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+
+    sim.crash("n1")
+    replacement = cluster.node("n2")
+    replacement.start_election()
+    sim.run()
+    assert replacement.role is RaftRole.LEADER
+
+    sim.persistent_state["n2"]["log"] = (LogEntry(term=1, command="old"),)
+    with pytest.raises(LeaderCompletenessViolation, match="missing committed index 2"):
+        harness.checkpoint()
