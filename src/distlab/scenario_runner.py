@@ -4,13 +4,14 @@ from dataclasses import dataclass
 
 from .client_history import KVClientHistory
 from .kv import ClientRequest, Delete, Put, ReplicatedKV
-from .linearizability import LinearizabilityResult, OperationHistory, SingleKeyKVLinearizabilityChecker
+from .linearizability import (
+    LinearizabilityResult,
+    OperationHistory,
+    SingleKeyKVLinearizabilityChecker,
+)
 from .raft import LogEntry, RaftCluster, RaftRole
 from .randomized_faults import SeededFaultSchedule
-from .randomized_workload import (
-    ClientOperationKind,
-    SeededClientWorkloadSchedule,
-)
+from .randomized_workload import ClientOperationKind, SeededClientWorkloadSchedule
 from .replication import LeaderReplicator, ReplicationResponseMissing
 from .simulator import Simulator, TraceRecord
 
@@ -65,7 +66,9 @@ class ReplicatedKVScenarioRunner:
         leader.start_election()
         sim.run()
         if leader.role is not RaftRole.LEADER:
-            raise ScenarioExecutionError("configured leader could not win the deterministic election")
+            raise ScenarioExecutionError(
+                "configured leader could not win the deterministic election"
+            )
 
         replicator = LeaderReplicator(leader)
         kv = ReplicatedKV(cluster)
@@ -122,7 +125,7 @@ class ReplicatedKVScenarioRunner:
             raise ScenarioExecutionError("client write requires the configured leader")
         previous = leader.log
         entry = LogEntry(term=leader.current_term, command=request)
-        leader.sim.persistent_state[leader.node_id]["log"] = previous + (entry,)
+        leader.sim.persistent_state[leader.node_id]["log"] = (*previous, entry)
         leader.sim._record(
             "raft-client-append",
             leader=leader.node_id,
