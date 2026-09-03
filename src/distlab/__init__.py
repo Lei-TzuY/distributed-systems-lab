@@ -30,6 +30,7 @@ from .raft import (
     RequestVote,
     RequestVoteResponse,
 )
+from .randomized_faults import FaultOpportunity, SeededFaultGenerator, SeededFaultSchedule
 from .simulator import (
     FaultAction,
     FaultPlan,
@@ -52,6 +53,7 @@ __all__ = [
     "Delete",
     "ElectionSafetyViolation",
     "FaultAction",
+    "FaultOpportunity",
     "FaultPlan",
     "FaultRule",
     "Get",
@@ -74,6 +76,8 @@ __all__ = [
     "RequestVote",
     "RequestVoteResponse",
     "ScenarioAction",
+    "SeededFaultGenerator",
+    "SeededFaultSchedule",
     "Simulator",
     "SingleKeyKVLinearizabilityChecker",
     "StateMachineApplier",
