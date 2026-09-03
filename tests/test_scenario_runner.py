@@ -41,7 +41,9 @@ def test_explicit_schedule_replays_to_identical_trace_and_history() -> None:
 
     assert first.linearizability.linearizable
     assert first.linearizability.order == ("write", "read")
-    assert first.history.events == second.history.events
+    assert first.history.invocations() == second.history.invocations()
+    assert first.history.completed() == second.history.completed()
+    assert first.history.pending() == second.history.pending()
     assert first.trace == second.trace
     assert first.snapshots == second.snapshots == {
         "n1": {"x": "one"},
