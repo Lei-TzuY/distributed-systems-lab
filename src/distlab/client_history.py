@@ -8,9 +8,10 @@ class KVClientHistory:
     """Capture client-visible KV executions into a linearizability history.
 
     A write invocation remains pending until a replica has durably applied the
-    corresponding ``ClientRequest``. Retries may re-submit the same request to
-    Raft without creating a second logical history operation. Reads are sampled
-    from one replica and completed immediately with the value observed there.
+    corresponding ``ClientRequest``. Retries re-submit the exact same pending
+    request without creating a second logical history operation. Reads are
+    sampled from one replica and completed immediately with the value observed
+    there.
     """
 
     def __init__(self, kv: ReplicatedKV, history: OperationHistory | None = None) -> None:
@@ -36,6 +37,30 @@ class KVClientHistory:
             operation_id=operation_id,
             client_id=client_id,
             request_id=request_id,
+            operation=self._operation_name(operation),
+            key=operation.key,
+        )
+        return request
+
+    def retry_write(self, operation_id: str) -> ClientRequest:
+        """Return the exact pending request for a transport/protocol retry.
+
+        A retry is not a new client-visible operation, so it deliberately does
+        not add another invocation to ``OperationHistory``. Requiring the
+        original operation to remain pending also prevents a completed logical
+        write from being accidentally re-opened with the same operation id.
+        """
+
+        request = self._pending_writes.get(operation_id)
+        if request is None:
+            raise ValueError(f"unknown pending write {operation_id!r}")
+
+        operation = request.operation
+        self.sim._record(
+            "client-retry",
+            operation_id=operation_id,
+            client_id=request.client_id,
+            request_id=request.request_id,
             operation=self._operation_name(operation),
             key=operation.key,
         )
