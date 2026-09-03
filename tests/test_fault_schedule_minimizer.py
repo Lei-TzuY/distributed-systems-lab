@@ -4,12 +4,15 @@ from distlab.randomized_faults import (
     SeededFaultGenerator,
     SeededFaultSchedule,
 )
-from distlab.randomized_workload import SeededClientWorkloadGenerator
+from distlab.randomized_workload import (
+    SeededClientWorkloadGenerator,
+    SeededClientWorkloadSchedule,
+)
 from distlab.scenario_runner import ReplicatedKVScenarioRunner
 from distlab.simulator import FaultAction, FaultRule
 
 
-def _failing_inputs() -> tuple[object, SeededFaultSchedule]:
+def _failing_inputs() -> tuple[SeededClientWorkloadSchedule, SeededFaultSchedule]:
     workload = SeededClientWorkloadGenerator(
         clients=("client",),
         nodes=("n1", "n2"),
