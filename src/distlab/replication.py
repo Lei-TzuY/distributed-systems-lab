@@ -139,7 +139,7 @@ class LeaderReplicator:
             raise ValueError("max_attempts must be positive when provided")
 
         attempts = 0
-        while max_attempts is None or attempts < max_attempts:
+        while True:
             self._require_current_leader()
             follower = self.leader.cluster.node(peer)
             progress = self._progress[peer]
@@ -157,11 +157,11 @@ class LeaderReplicator:
                     commit_index=follower.commit_index,
                 )
                 return True
+            if max_attempts is not None and attempts >= max_attempts:
+                return False
 
             attempts += 1
             self.replicate(peer, max_attempts=1)
-
-        return False
 
     def advance_commit_index(self) -> int:
         self._require_current_leader()
