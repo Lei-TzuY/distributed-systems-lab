@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .commit_recovery import CommitRecoveryBarrier
 from .raft import LogEntry, RaftCluster
 from .state_machine import AppliedEntry, StateMachineApplier
 
@@ -45,7 +46,7 @@ class ClientRequest:
             raise TypeError("client request operation must be Put or Delete")
 
 
-KVCommand = Put | Delete | ClientRequest
+KVCommand = Put | Delete | ClientRequest | CommitRecoveryBarrier
 
 
 class InvalidKVCommand(TypeError):
@@ -102,7 +103,8 @@ class ReplicatedKV:
         Duplicate ``ClientRequest`` entries with the same identity and operation
         advance Raft/state-machine progress but do not execute the operation a
         second time. Reusing an identity for a different operation is rejected
-        before durable applied progress advances.
+        before durable applied progress advances. Internal commit-recovery
+        barriers advance applied progress as deterministic no-ops.
         """
 
         self._require_node(node_id)
@@ -171,11 +173,15 @@ class ReplicatedKV:
         if emit_trace:
             if isinstance(operation, Put):
                 operation_name = "put"
-                key = operation.key
+                key: str | None = operation.key
                 value: str | None = operation.value
             elif isinstance(operation, Delete):
                 operation_name = "delete"
                 key = operation.key
+                value = None
+            elif isinstance(operation, CommitRecoveryBarrier):
+                operation_name = "commit-recovery-barrier"
+                key = None
                 value = None
             else:  # validation should make this unreachable
                 raise InvalidKVCommand(f"unsupported KV command {operation!r}")
@@ -197,6 +203,8 @@ class ReplicatedKV:
             state[operation.key] = operation.value
         elif isinstance(operation, Delete):
             state.pop(operation.key, None)
+        elif isinstance(operation, CommitRecoveryBarrier):
+            return
         else:
             raise InvalidKVCommand(f"unsupported KV command {operation!r}")
 
@@ -207,7 +215,7 @@ class ReplicatedKV:
             if isinstance(command, ClientRequest):
                 if not isinstance(command.operation, (Put, Delete)):
                     raise InvalidKVCommand(f"unsupported KV command {command.operation!r}")
-            elif not isinstance(command, (Put, Delete)):
+            elif not isinstance(command, (Put, Delete, CommitRecoveryBarrier)):
                 raise InvalidKVCommand(f"unsupported KV command {command!r}")
 
     def _validate_request_conflicts(self, node_id: str, entries: tuple[LogEntry, ...]) -> None:
