@@ -5,6 +5,10 @@ from .campaign import (
     SeededScenarioCampaign,
 )
 from .client_history import KVClientHistory
+from .fault_schedule_minimizer import (
+    FaultScheduleMinimizationResult,
+    NonLinearizableFaultScheduleMinimizer,
+)
 from .history_minimizer import HistoryMinimizationResult, NonLinearizableHistoryMinimizer
 from .kv import (
     ClientRequest,
@@ -77,6 +81,7 @@ __all__ = [
     "FaultOpportunity",
     "FaultPlan",
     "FaultRule",
+    "FaultScheduleMinimizationResult",
     "Get",
     "HistoryMinimizationResult",
     "InvalidHistory",
@@ -87,6 +92,7 @@ __all__ = [
     "LogEntry",
     "LogMatchingViolation",
     "Message",
+    "NonLinearizableFaultScheduleMinimizer",
     "NonLinearizableHistoryMinimizer",
     "OperationHistory",
     "Put",
