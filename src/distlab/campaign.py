@@ -5,6 +5,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from typing import Any
 
+from .fault_schedule_minimizer import NonLinearizableFaultScheduleMinimizer
 from .history_minimizer import NonLinearizableHistoryMinimizer
 from .randomized_faults import FaultOpportunity, SeededFaultGenerator, SeededFaultSchedule
 from .randomized_workload import SeededClientWorkloadGenerator, SeededClientWorkloadSchedule
@@ -23,6 +24,9 @@ class CampaignFailureArtifact:
     seed: int
     workload: SeededClientWorkloadSchedule
     faults: SeededFaultSchedule
+    minimized_faults: SeededFaultSchedule
+    kept_fault_rule_indices: tuple[int, ...]
+    removed_fault_rule_indices: tuple[int, ...]
     trace_json: str
     minimized_operation_ids: tuple[str, ...]
     removed_operation_ids: tuple[str, ...]
@@ -33,25 +37,40 @@ class CampaignFailureArtifact:
         workload: SeededClientWorkloadSchedule,
         faults: SeededFaultSchedule,
         result: ReplicatedKVScenarioResult,
+        *,
+        node_ids: tuple[str, ...] = ("n1", "n2", "n3"),
+        leader_id: str = "n1",
     ) -> CampaignFailureArtifact:
         if result.linearizability.linearizable:
             raise ValueError("failure artifact requires a non-linearizable result")
-        minimized = NonLinearizableHistoryMinimizer().minimize(result.history)
+        minimized_history = NonLinearizableHistoryMinimizer().minimize(result.history)
+        minimized_faults = NonLinearizableFaultScheduleMinimizer().minimize(
+            workload,
+            faults,
+            node_ids=node_ids,
+            leader_id=leader_id,
+        )
         return cls(
             seed=workload.seed,
             workload=workload,
             faults=faults,
+            minimized_faults=minimized_faults.schedule,
+            kept_fault_rule_indices=minimized_faults.kept_original_indices,
+            removed_fault_rule_indices=minimized_faults.removed_original_indices,
             trace_json=_encode_trace(result.trace),
-            minimized_operation_ids=minimized.operation_ids,
-            removed_operation_ids=minimized.removed_operation_ids,
+            minimized_operation_ids=minimized_history.operation_ids,
+            removed_operation_ids=minimized_history.removed_operation_ids,
         )
 
     def to_json(self) -> str:
         payload = {
-            "version": 1,
+            "version": 2,
             "seed": self.seed,
             "workload": json.loads(self.workload.to_json()),
             "faults": json.loads(self.faults.to_json()),
+            "minimized_faults": json.loads(self.minimized_faults.to_json()),
+            "kept_fault_rule_indices": list(self.kept_fault_rule_indices),
+            "removed_fault_rule_indices": list(self.removed_fault_rule_indices),
             "trace": json.loads(self.trace_json),
             "minimized_operation_ids": list(self.minimized_operation_ids),
             "removed_operation_ids": list(self.removed_operation_ids),
@@ -61,18 +80,25 @@ class CampaignFailureArtifact:
     @classmethod
     def from_json(cls, encoded: str) -> CampaignFailureArtifact:
         raw = json.loads(encoded)
-        if not isinstance(raw, dict) or raw.get("version") != 1:
+        if not isinstance(raw, dict) or raw.get("version") != 2:
             raise ValueError("unsupported campaign failure artifact format")
         seed = raw.get("seed")
         if not isinstance(seed, int) or isinstance(seed, bool):
             raise ValueError("seed must be an integer")
         workload_raw = raw.get("workload")
         faults_raw = raw.get("faults")
+        minimized_faults_raw = raw.get("minimized_faults")
+        kept_fault_rules = raw.get("kept_fault_rule_indices")
+        removed_fault_rules = raw.get("removed_fault_rule_indices")
         trace_raw = raw.get("trace")
         minimized = raw.get("minimized_operation_ids")
         removed = raw.get("removed_operation_ids")
         if not isinstance(workload_raw, dict) or not isinstance(faults_raw, dict):
             raise ValueError("artifact schedules must be objects")
+        if not isinstance(minimized_faults_raw, dict):
+            raise ValueError("artifact minimized fault schedule must be an object")
+        if not _integer_list(kept_fault_rules) or not _integer_list(removed_fault_rules):
+            raise ValueError("artifact fault rule index lists must contain integers")
         if not isinstance(trace_raw, list):
             raise ValueError("artifact trace must be a list")
         if not _string_list(minimized) or not _string_list(removed):
@@ -80,12 +106,27 @@ class CampaignFailureArtifact:
 
         workload = SeededClientWorkloadSchedule.from_json(_canonical_json(workload_raw))
         faults = SeededFaultSchedule.from_json(_canonical_json(faults_raw))
+        minimized_faults = SeededFaultSchedule.from_json(
+            _canonical_json(minimized_faults_raw)
+        )
         if workload.seed != seed:
             raise ValueError("artifact seed must match workload seed")
+        if faults.seed != seed or minimized_faults.seed != seed:
+            raise ValueError("artifact seed must match fault schedule seeds")
+        _validate_fault_partition(
+            len(faults.rules),
+            tuple(kept_fault_rules),
+            tuple(removed_fault_rules),
+        )
+        if minimized_faults.rules != tuple(faults.rules[index] for index in kept_fault_rules):
+            raise ValueError("artifact minimized faults must match kept fault rule indices")
         return cls(
             seed=seed,
             workload=workload,
             faults=faults,
+            minimized_faults=minimized_faults,
+            kept_fault_rule_indices=tuple(kept_fault_rules),
+            removed_fault_rule_indices=tuple(removed_fault_rules),
             trace_json=_canonical_json(trace_raw),
             minimized_operation_ids=tuple(minimized),
             removed_operation_ids=tuple(removed),
@@ -107,11 +148,33 @@ class CampaignFailureArtifact:
             raise FailureArtifactReplayMismatch("persisted failure replay became linearizable")
         if _encode_trace(result.trace) != self.trace_json:
             raise FailureArtifactReplayMismatch("persisted failure trace did not replay exactly")
-        minimized = NonLinearizableHistoryMinimizer().minimize(result.history)
-        if minimized.operation_ids != self.minimized_operation_ids:
+        minimized_history = NonLinearizableHistoryMinimizer().minimize(result.history)
+        if minimized_history.operation_ids != self.minimized_operation_ids:
             raise FailureArtifactReplayMismatch("minimized failure witness changed during replay")
-        if minimized.removed_operation_ids != self.removed_operation_ids:
+        if minimized_history.removed_operation_ids != self.removed_operation_ids:
             raise FailureArtifactReplayMismatch("removed operation set changed during replay")
+
+        minimized_faults = NonLinearizableFaultScheduleMinimizer().minimize(
+            self.workload,
+            self.faults,
+            node_ids=node_ids,
+            leader_id=leader_id,
+        )
+        if minimized_faults.schedule != self.minimized_faults:
+            raise FailureArtifactReplayMismatch("minimized fault schedule changed during replay")
+        if minimized_faults.kept_original_indices != self.kept_fault_rule_indices:
+            raise FailureArtifactReplayMismatch("kept fault rule set changed during replay")
+        if minimized_faults.removed_original_indices != self.removed_fault_rule_indices:
+            raise FailureArtifactReplayMismatch("removed fault rule set changed during replay")
+
+        minimized_result = ReplicatedKVScenarioRunner(
+            self.workload,
+            self.minimized_faults,
+            node_ids=node_ids,
+            leader_id=leader_id,
+        ).run()
+        if minimized_result.linearizability.linearizable:
+            raise FailureArtifactReplayMismatch("minimized fault replay became linearizable")
         return result
 
 
@@ -158,7 +221,13 @@ class SeededScenarioCampaign:
             if not result.linearizability.linearizable:
                 return ScenarioCampaignResult(
                     attempted_seeds=tuple(attempted),
-                    failure=CampaignFailureArtifact.capture(workload, faults, result),
+                    failure=CampaignFailureArtifact.capture(
+                        workload,
+                        faults,
+                        result,
+                        node_ids=self.node_ids,
+                        leader_id=self.leader_id,
+                    ),
                 )
         return ScenarioCampaignResult(attempted_seeds=tuple(attempted), failure=None)
 
@@ -200,3 +269,23 @@ def _canonical_json(value: Any) -> str:
 
 def _string_list(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _integer_list(value: Any) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(item, int) and not isinstance(item, bool) for item in value
+    )
+
+
+def _validate_fault_partition(
+    rule_count: int,
+    kept: tuple[int, ...],
+    removed: tuple[int, ...],
+) -> None:
+    all_indices = kept + removed
+    if len(set(all_indices)) != len(all_indices):
+        raise ValueError("artifact fault rule indices must be unique")
+    if any(index < 0 or index >= rule_count for index in all_indices):
+        raise ValueError("artifact fault rule index out of range")
+    if set(all_indices) != set(range(rule_count)):
+        raise ValueError("artifact fault rule indices must partition original rules")
