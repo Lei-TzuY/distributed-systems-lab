@@ -59,8 +59,6 @@ class ReplicatedKVScenarioRunner:
             raise ValueError("scenario runner currently supports a single KV key")
 
         lifecycle = lifecycle or SeededLifecycleSchedule.empty(workload.seed)
-        if lifecycle.seed != workload.seed or faults.seed != workload.seed:
-            raise ValueError("workload, lifecycle, and fault schedules must share a seed")
         unknown_lifecycle = sorted(
             {action.node_id for action in lifecycle.actions} - set(node_ids)
         )
