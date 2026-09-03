@@ -1,3 +1,4 @@
+from .client_history import KVClientHistory
 from .kv import (
     ClientRequest,
     ClientRequestConflict,
@@ -56,6 +57,7 @@ __all__ = [
     "InvalidHistory",
     "InvalidKVCommand",
     "Invocation",
+    "KVClientHistory",
     "LinearizabilityResult",
     "LogEntry",
     "LogMatchingViolation",
