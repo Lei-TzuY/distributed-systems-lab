@@ -72,5 +72,5 @@ def test_election_safety_checker_rejects_conflicting_observation_history() -> No
     checker = ElectionSafetyChecker()
     checker.observe_leader(term=7, node_id="n1")
 
-    with pytest.raises(ElectionSafetyViolation, match="n1.*n2"):
+    with pytest.raises(ElectionSafetyViolation, match=r"n1.*n2"):
         checker.observe_leader(term=7, node_id="n2")
