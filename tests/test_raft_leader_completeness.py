@@ -33,7 +33,11 @@ def test_observe_commit_records_entire_newly_committed_prefix() -> None:
 
     checker.observe_commit(cluster.node("n1"))
 
-    assert [(record.index, record.entry.command, record.committed_in_term) for record in checker.committed_entries] == [
+    observed = [
+        (record.index, record.entry.command, record.committed_in_term)
+        for record in checker.committed_entries
+    ]
+    assert observed == [
         (1, "old", 3),
         (2, "current", 3),
     ]
