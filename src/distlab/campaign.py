@@ -255,11 +255,17 @@ class CampaignFailureArtifact:
                 leader_id=leader_id,
             )
             if minimized_faults.schedule != self.minimized_faults:
-                raise FailureArtifactReplayMismatch("minimized fault schedule changed during replay")
+                raise FailureArtifactReplayMismatch(
+                    "minimized fault schedule changed during replay"
+                )
             if minimized_faults.kept_original_indices != self.kept_fault_rule_indices:
-                raise FailureArtifactReplayMismatch("kept fault rule set changed during replay")
+                raise FailureArtifactReplayMismatch(
+                    "kept fault rule set changed during replay"
+                )
             if minimized_faults.removed_original_indices != self.removed_fault_rule_indices:
-                raise FailureArtifactReplayMismatch("removed fault rule set changed during replay")
+                raise FailureArtifactReplayMismatch(
+                    "removed fault rule set changed during replay"
+                )
 
             minimized_workload = NonLinearizableClientWorkloadMinimizer().minimize(
                 self.workload,
@@ -268,11 +274,20 @@ class CampaignFailureArtifact:
                 leader_id=leader_id,
             )
             if minimized_workload.schedule != self.minimized_workload:
-                raise FailureArtifactReplayMismatch("minimized workload changed during replay")
+                raise FailureArtifactReplayMismatch(
+                    "minimized workload changed during replay"
+                )
             if minimized_workload.kept_original_indices != self.kept_workload_action_indices:
-                raise FailureArtifactReplayMismatch("kept workload action set changed during replay")
-            if minimized_workload.removed_original_indices != self.removed_workload_action_indices:
-                raise FailureArtifactReplayMismatch("removed workload action set changed during replay")
+                raise FailureArtifactReplayMismatch(
+                    "kept workload action set changed during replay"
+                )
+            if (
+                minimized_workload.removed_original_indices
+                != self.removed_workload_action_indices
+            ):
+                raise FailureArtifactReplayMismatch(
+                    "removed workload action set changed during replay"
+                )
 
         minimized_result = ReplicatedKVScenarioRunner(
             self.minimized_workload,
