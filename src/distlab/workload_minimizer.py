@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from ._deletion_minimizer import minimize_indexed_sequence
 from .randomized_faults import SeededFaultSchedule
-from .randomized_workload import ClientAction, SeededClientWorkloadSchedule
+from .randomized_workload import ClientWorkloadAction, SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioRunner
 
 
@@ -43,7 +43,7 @@ class NonLinearizableClientWorkloadMinimizer:
         if baseline.linearizability.linearizable:
             raise ValueError("client workload minimization requires a non-linearizable scenario")
 
-        def preserves_failure(actions: tuple[ClientAction, ...]) -> bool:
+        def preserves_failure(actions: tuple[ClientWorkloadAction, ...]) -> bool:
             candidate = SeededClientWorkloadSchedule(seed=workload.seed, actions=actions)
             result = ReplicatedKVScenarioRunner(
                 candidate,
