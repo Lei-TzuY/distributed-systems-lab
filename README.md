@@ -2,27 +2,38 @@
 
 A deterministic distributed-systems correctness laboratory for replicated state machines, consensus, failure semantics, durability, and linearizability.
 
-The project starts with a deterministic simulation kernel before implementing Raft. Correctness, reproducibility, and executable invariants take priority over protocol breadth or networking realism.
+The repository now has a complete first correctness vertical slice rather than only the original simulator bootstrap. The stable checkpoint is:
 
-## Initial architecture
+```text
+deterministic simulator
+        -> Raft election/log replication
+        -> persistence and crash/restart recovery
+        -> replicated KV + client request deduplication
+        -> client histories + linearizability checking
+        -> seeded workload/fault/lifecycle campaigns
+        -> exact replay + deterministic failure minimization
+```
 
-The first milestone provides a deterministic event-driven simulator with:
+## Current capabilities
 
-- logical time
-- stable event ordering
-- explicit message envelopes
-- deterministic drop, delay, and duplicate fault schedules
-- crash/restart state hooks
-- structured execution traces
-- scenario replay suitable for regression tests
+- deterministic logical-time event simulator with stable ordering and structured traces
+- explicit drop/delay/duplicate message fault plans and persisted seeded schedules
+- replayable crash/restart lifecycle schedules with persistent-vs-volatile state boundaries
+- Raft election, RequestVote, AppendEntries, log backtracking, commit advancement, and restart recovery
+- executable Election Safety, Leader Append-Only, Log Matching, Leader Completeness, and State Machine Safety checks
+- deterministic replicated key-value state machine with client request deduplication and recovery
+- client operation histories and a single-key KV linearizability checker
+- seeded client workload, message-fault, and lifecycle campaigns
+- versioned exact-replay failure artifacts
+- deterministic 1-minimal reduction of failing histories, workloads, fault schedules, and lifecycle schedules
 
-Seeded randomized fault generation is intentionally deferred until it can emit a persisted, replayable fault schedule.
+## Checkpoint scope
 
-Raft election and log replication will be layered on top only after the simulator has stable reproducibility tests.
+This is a correctness laboratory, not a production distributed database. The first checkpoint deliberately stops before new architectural phases such as snapshot/install-snapshot, log compaction, membership changes, additional consensus protocols, or real-network deployment.
 
-## Scope discipline
+Those are Phase 2 work and should only begin as explicit bounded projects; they are not automatic follow-ons merely to create repository activity.
 
-This repository intentionally does not implement Paxos, Zab, SWIM, gossip, or a large real-network deployment while the Raft correctness harness is immature.
+See [`docs/architecture.md`](docs/architecture.md) for invariants and [`docs/stability-checkpoint.md`](docs/stability-checkpoint.md) for the maintenance boundary.
 
 ## Development
 
@@ -32,4 +43,4 @@ pytest
 ruff check .
 ```
 
-See `docs/architecture.md` for design invariants once the simulator foundation lands.
+A failing randomized/campaign case must remain reproducible from persisted schedules and artifacts. Flaky tests are treated as harness defects.
