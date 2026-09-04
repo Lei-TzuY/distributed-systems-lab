@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ._deletion_minimizer import minimize_indexed_sequence
-from .randomized_faults import FaultRule, SeededFaultSchedule
+from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioRunner
+from .simulator import FaultRule
 
 
 @dataclass(frozen=True, slots=True)
