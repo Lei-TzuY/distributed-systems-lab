@@ -43,13 +43,13 @@ def test_minimizer_removes_redundant_crash_restart_pair_deterministically() -> N
                 action_id="crash-n3",
                 node_id="n3",
                 kind=NodeLifecycleKind.CRASH,
-                before_action_index=0,
+                before_action_index=2,
             ),
             NodeLifecycleAction(
                 action_id="restart-n3",
                 node_id="n3",
                 kind=NodeLifecycleKind.RESTART,
-                before_action_index=1,
+                before_action_index=2,
             ),
         ),
     )
