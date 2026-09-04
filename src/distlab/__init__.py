@@ -38,6 +38,12 @@ from .linearizability import (
     OperationHistory,
     SingleKeyKVLinearizabilityChecker,
 )
+from .linearizable_read import (
+    CurrentTermCommitRequired,
+    LinearizableKVReader,
+    LinearizableReadError,
+    ReadQuorumUnavailable,
+)
 from .raft import (
     AppendEntries,
     AppendEntriesResponse,
@@ -100,6 +106,7 @@ __all__ = [
     "CommittedEntryObservation",
     "CompletedOperation",
     "Completion",
+    "CurrentTermCommitRequired",
     "Delete",
     "ElectionSafetyChecker",
     "ElectionSafetyViolation",
@@ -122,6 +129,8 @@ __all__ = [
     "LeaderLogObservation",
     "LifecycleScheduleMinimizationResult",
     "LinearizabilityResult",
+    "LinearizableKVReader",
+    "LinearizableReadError",
     "LogEntry",
     "LogMatchingViolation",
     "Message",
@@ -137,6 +146,7 @@ __all__ = [
     "RaftNode",
     "RaftRole",
     "RaftSafetyHarness",
+    "ReadQuorumUnavailable",
     "ReplicatedKV",
     "ReplicatedKVScenarioResult",
     "ReplicatedKVScenarioRunner",
