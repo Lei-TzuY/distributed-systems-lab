@@ -158,7 +158,9 @@ class CampaignFailureArtifact:
         lifecycle_raw = raw.get("lifecycle") if version >= 4 else None
         minimized_lifecycle_raw = raw.get("minimized_lifecycle") if version >= 5 else None
         kept_lifecycle_actions = raw.get("kept_lifecycle_action_indices") if version >= 5 else None
-        removed_lifecycle_actions = raw.get("removed_lifecycle_action_indices") if version >= 5 else None
+        removed_lifecycle_actions = (
+            raw.get("removed_lifecycle_action_indices") if version >= 5 else None
+        )
         trace_raw = raw.get("trace")
         minimized = raw.get("minimized_operation_ids")
         removed = raw.get("removed_operation_ids")
