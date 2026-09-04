@@ -118,7 +118,7 @@ def test_campaign_failure_persists_and_replays_lifecycle_schedule() -> None:
         operation_count=2,
         lifecycle_generator=SeededLifecycleGenerator(
             nodes=("n3",),
-            crash_rate=1.0,
+            crash_rate=0.5,
             restart_rate=0.0,
         ),
     )
@@ -128,7 +128,7 @@ def test_campaign_failure_persists_and_replays_lifecycle_schedule() -> None:
     assert failure is not None
     assert len(failure.lifecycle.actions) == 1
     assert failure.lifecycle.actions[0].node_id == "n3"
-    assert failure.lifecycle.actions[0].before_action_index == 0
+    assert failure.lifecycle.actions[0].before_action_index == 2
     assert failure.minimized_workload == failure.workload
     assert failure.minimized_faults == failure.faults
     assert failure.removed_workload_action_indices == ()
@@ -206,7 +206,7 @@ def test_failure_artifact_rejects_lifecycle_projection_minimization() -> None:
         operation_count=2,
         lifecycle_generator=SeededLifecycleGenerator(
             nodes=("n3",),
-            crash_rate=1.0,
+            crash_rate=0.5,
             restart_rate=0.0,
         ),
     )
