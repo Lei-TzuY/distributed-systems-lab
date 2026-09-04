@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .log_index import RaftLogView
 from .raft import RaftNode, RaftRole
 
 
@@ -61,7 +60,7 @@ class LeaderReplicator:
             progress = self._progress[peer]
             next_index = progress.next_index
             prev_log_index = next_index - 1
-            log = RaftLogView.uncompacted(self.leader.log)
+            log = self.leader.log_view
             entries = log.suffix_from(next_index)
             trace_start = len(self.sim.trace)
 
@@ -169,7 +168,7 @@ class LeaderReplicator:
         self._require_current_leader()
         majority = len(self.leader.cluster.node_ids) // 2 + 1
         previous = self._commit_index
-        log = RaftLogView.uncompacted(self.leader.log)
+        log = self.leader.log_view
 
         for index in range(log.last_index, previous, -1):
             if log.term_at(index) != self._term:
