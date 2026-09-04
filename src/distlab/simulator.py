@@ -72,6 +72,8 @@ class ScenarioAction:
     delay: int = 1
     node: str | None = None
     max_events: int | None = None
+    left: tuple[str, ...] = ()
+    right: tuple[str, ...] = ()
 
     @classmethod
     def send(cls, src: str, dst: str, payload: Any, *, delay: int = 1) -> ScenarioAction:
@@ -84,6 +86,18 @@ class ScenarioAction:
     @classmethod
     def restart(cls, node: str) -> ScenarioAction:
         return cls(kind="restart", node=node)
+
+    @classmethod
+    def partition(
+        cls, left: tuple[str, ...], right: tuple[str, ...]
+    ) -> ScenarioAction:
+        return cls(kind="partition", left=left, right=right)
+
+    @classmethod
+    def heal_partition(
+        cls, left: tuple[str, ...], right: tuple[str, ...]
+    ) -> ScenarioAction:
+        return cls(kind="heal-partition", left=left, right=right)
 
     @classmethod
     def run(cls, *, max_events: int | None = None) -> ScenarioAction:
@@ -118,6 +132,7 @@ class Simulator:
         self._restart_handlers: dict[str, RestartHandler] = {}
         self._alive: dict[str, bool] = defaultdict(lambda: True)
         self._send_ordinals: dict[tuple[str, str], int] = defaultdict(int)
+        self._blocked_links: set[tuple[str, str]] = set()
         self.fault_plan = fault_plan or FaultPlan()
         self.trace: list[TraceRecord] = []
         self.persistent_state: dict[str, dict[str, Any]] = defaultdict(dict)
@@ -143,6 +158,24 @@ class Simulator:
         key = (src, dst)
         self._send_ordinals[key] += 1
         message = Message(src=src, dst=dst, payload=payload, ordinal=self._send_ordinals[key])
+        if key in self._blocked_links:
+            self._record(
+                "send",
+                src=src,
+                dst=dst,
+                ordinal=message.ordinal,
+                payload=payload,
+                action="partition-drop",
+            )
+            self._record(
+                "partition-drop",
+                src=src,
+                dst=dst,
+                ordinal=message.ordinal,
+                payload=payload,
+            )
+            return
+
         rule = self.fault_plan.action_for(message)
         self._record(
             "send",
@@ -189,6 +222,22 @@ class Simulator:
         restart_handler = self._restart_handlers.get(node)
         if restart_handler is not None:
             restart_handler(self)
+
+    def partition(self, left: tuple[str, ...], right: tuple[str, ...]) -> None:
+        left_nodes, right_nodes = self._validate_partition_groups(left, right)
+        for src in left_nodes:
+            for dst in right_nodes:
+                self._blocked_links.add((src, dst))
+                self._blocked_links.add((dst, src))
+        self._record("partition", left=left_nodes, right=right_nodes)
+
+    def heal_partition(self, left: tuple[str, ...], right: tuple[str, ...]) -> None:
+        left_nodes, right_nodes = self._validate_partition_groups(left, right)
+        for src in left_nodes:
+            for dst in right_nodes:
+                self._blocked_links.discard((src, dst))
+                self._blocked_links.discard((dst, src))
+        self._record("heal-partition", left=left_nodes, right=right_nodes)
 
     def is_alive(self, node: str) -> bool:
         return self._alive[node]
@@ -241,12 +290,30 @@ class Simulator:
                 if action.node is None:
                     raise ValueError("restart action requires node")
                 self.restart(action.node)
+            elif action.kind == "partition":
+                self.partition(action.left, action.right)
+            elif action.kind == "heal-partition":
+                self.heal_partition(action.left, action.right)
             elif action.kind == "run":
                 self.run(max_events=action.max_events)
             else:
                 raise ValueError(f"unknown scenario action {action.kind!r}")
         self.run()
         return list(self.trace)
+
+    def _validate_partition_groups(
+        self, left: tuple[str, ...], right: tuple[str, ...]
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        if not left or not right:
+            raise ValueError("partition groups must be non-empty")
+        if len(set(left)) != len(left) or len(set(right)) != len(right):
+            raise ValueError("partition groups must not contain duplicate nodes")
+        if set(left) & set(right):
+            raise ValueError("partition groups must be disjoint")
+        unknown = (set(left) | set(right)) - set(self._handlers)
+        if unknown:
+            raise ValueError(f"partition references unknown nodes: {sorted(unknown)!r}")
+        return tuple(sorted(left)), tuple(sorted(right))
 
     def _schedule(self, message: Message, delay: int) -> None:
         self._sequence += 1
