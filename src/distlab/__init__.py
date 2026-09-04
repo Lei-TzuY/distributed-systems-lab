@@ -87,6 +87,7 @@ from .simulator import (
     Simulator,
     TraceRecord,
 )
+from .snapshot import KVSnapshot, KVSnapshotStore, SnapshotClientRequest
 from .state_machine import AppliedEntry, StateMachineApplier, StateMachineSafetyViolation
 from .workload_minimizer import (
     ClientWorkloadMinimizationResult,
@@ -122,6 +123,8 @@ __all__ = [
     "InvalidKVCommand",
     "Invocation",
     "KVClientHistory",
+    "KVSnapshot",
+    "KVSnapshotStore",
     "LeaderAppendOnlyChecker",
     "LeaderAppendOnlyViolation",
     "LeaderCompletenessChecker",
@@ -164,6 +167,7 @@ __all__ = [
     "SeededScenarioCampaign",
     "Simulator",
     "SingleKeyKVLinearizabilityChecker",
+    "SnapshotClientRequest",
     "StateMachineApplier",
     "StateMachineSafetyViolation",
     "TraceRecord",
