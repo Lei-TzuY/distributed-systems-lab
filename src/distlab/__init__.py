@@ -18,6 +18,16 @@ from .kv import (
     Put,
     ReplicatedKV,
 )
+from .lifecycle import (
+    NodeLifecycleAction,
+    NodeLifecycleKind,
+    SeededLifecycleGenerator,
+    SeededLifecycleSchedule,
+)
+from .lifecycle_minimizer import (
+    LifecycleScheduleMinimizationResult,
+    NonLinearizableLifecycleScheduleMinimizer,
+)
 from .linearizability import (
     CompletedOperation,
     Completion,
@@ -72,6 +82,10 @@ from .simulator import (
     TraceRecord,
 )
 from .state_machine import AppliedEntry, StateMachineApplier, StateMachineSafetyViolation
+from .workload_minimizer import (
+    ClientWorkloadMinimizationResult,
+    NonLinearizableClientWorkloadMinimizer,
+)
 
 __all__ = [
     "AppendEntries",
@@ -82,6 +96,7 @@ __all__ = [
     "ClientRequest",
     "ClientRequestConflict",
     "ClientWorkloadAction",
+    "ClientWorkloadMinimizationResult",
     "CommittedEntryObservation",
     "CompletedOperation",
     "Completion",
@@ -105,12 +120,17 @@ __all__ = [
     "LeaderCompletenessChecker",
     "LeaderCompletenessViolation",
     "LeaderLogObservation",
+    "LifecycleScheduleMinimizationResult",
     "LinearizabilityResult",
     "LogEntry",
     "LogMatchingViolation",
     "Message",
+    "NodeLifecycleAction",
+    "NodeLifecycleKind",
+    "NonLinearizableClientWorkloadMinimizer",
     "NonLinearizableFaultScheduleMinimizer",
     "NonLinearizableHistoryMinimizer",
+    "NonLinearizableLifecycleScheduleMinimizer",
     "OperationHistory",
     "Put",
     "RaftCluster",
@@ -129,6 +149,8 @@ __all__ = [
     "SeededClientWorkloadSchedule",
     "SeededFaultGenerator",
     "SeededFaultSchedule",
+    "SeededLifecycleGenerator",
+    "SeededLifecycleSchedule",
     "SeededScenarioCampaign",
     "Simulator",
     "SingleKeyKVLinearizabilityChecker",
