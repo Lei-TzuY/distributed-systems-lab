@@ -344,7 +344,9 @@ class RaftNode:
             leader_commit = self.commit_index
         if leader_commit < 0 or leader_commit > self.last_log_index:
             raise ValueError("leader_commit must reference the leader log")
-        prev_log_term = self.log[prev_log_index - 1].term if prev_log_index else 0
+        from .log_index import RaftLogView
+
+        prev_log_term = RaftLogView.uncompacted(self.log).term_at(prev_log_index)
         self.sim.send(
             self.node_id,
             peer,
@@ -493,34 +495,17 @@ class RaftNode:
         return request.last_log_index >= self.last_log_index
 
     def _prefix_matches(self, prev_log_index: int, prev_log_term: int) -> bool:
-        if prev_log_index == 0:
-            return prev_log_term == 0
-        if prev_log_index > self.last_log_index:
-            return False
-        return self.log[prev_log_index - 1].term == prev_log_term
+        from .log_index import RaftLogView
+
+        return RaftLogView.uncompacted(self.log).prefix_matches(prev_log_index, prev_log_term)
 
     def _merge_entries(self, prev_log_index: int, entries: tuple[LogEntry, ...]) -> None:
         if not entries:
             return
-        log = list(self.log)
-        insert_at = prev_log_index
-        incoming_offset = 0
-        while incoming_offset < len(entries) and insert_at < len(log):
-            existing = log[insert_at]
-            incoming = entries[incoming_offset]
-            if existing.term != incoming.term:
-                del log[insert_at:]
-                break
-            if existing != incoming:
-                raise LogMatchingViolation(
-                    "same index/term identifies different entries at "
-                    f"index {insert_at + 1}, term {existing.term}"
-                )
-            insert_at += 1
-            incoming_offset += 1
-        if incoming_offset < len(entries):
-            log.extend(entries[incoming_offset:])
-        self._persist_log(tuple(log))
+        from .log_index import RaftLogView
+
+        log = RaftLogView.uncompacted(self.log).merge_after(prev_log_index, entries)
+        self._persist_log(log)
 
     def _advance_term(self, term: int) -> None:
         if term <= self.current_term:
