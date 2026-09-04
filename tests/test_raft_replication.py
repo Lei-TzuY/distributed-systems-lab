@@ -48,6 +48,41 @@ def test_replication_backtracks_until_missing_suffix_matches() -> None:
     assert [record.details["next_index"] for record in backtracks] == [3, 2]
 
 
+def test_replication_repairs_missing_suffix_after_compacted_boundary() -> None:
+    sim = Simulator()
+    boundary = {"log_base_index": 2, "log_base_term": 2}
+    sim.persistent_state["n1"].update(
+        {
+            **boundary,
+            "log": (LogEntry(term=3, command="c"),),
+        }
+    )
+    sim.persistent_state["n2"].update({**boundary, "log": ()})
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+
+    leader = cluster.node("n1")
+    leader.start_election()
+    sim.run()
+    assert leader.role is RaftRole.LEADER
+
+    replicator = LeaderReplicator(leader)
+    assert replicator.progress("n2").next_index == 4
+    assert replicator.replicate("n2") is True
+
+    follower = cluster.node("n2")
+    assert follower.log_base_index == 2
+    assert follower.log_base_term == 2
+    assert follower.log == (LogEntry(term=3, command="c"),)
+    assert follower.last_log_index == 3
+    assert replicator.progress("n2").match_index == 3
+    assert replicator.progress("n2").next_index == 4
+
+    probes = [record for record in sim.trace if record.kind == "raft-replication-probe"]
+    assert [record.details["prev_log_index"] for record in probes] == [3, 2]
+    assert [record.details["entry_count"] for record in probes] == [0, 1]
+    cluster.assert_log_matching()
+
+
 def test_replication_repairs_conflicting_follower_suffix() -> None:
     leader_log = (
         LogEntry(term=1, command="a"),
