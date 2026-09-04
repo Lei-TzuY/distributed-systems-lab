@@ -60,6 +60,57 @@ def test_log_view_rejects_invalid_boundary_metadata() -> None:
         RaftLogView(base_index=0, base_term=1, entries=())
 
 
+def test_compact_through_preserves_absolute_boundary_and_retained_suffix() -> None:
+    log = RaftLogView.uncompacted(
+        (
+            LogEntry(term=1, command="a"),
+            LogEntry(term=2, command="b"),
+            LogEntry(term=2, command="c"),
+            LogEntry(term=3, command="d"),
+        )
+    )
+
+    compacted = log.compact_through(2)
+
+    assert compacted.base_index == 2
+    assert compacted.base_term == 2
+    assert compacted.entries == (
+        LogEntry(term=2, command="c"),
+        LogEntry(term=3, command="d"),
+    )
+    assert compacted.last_index == 4
+    assert compacted.last_term == 3
+    assert compacted.prefix_matches(2, 2) is True
+    assert compacted.entry_at(3) == LogEntry(term=2, command="c")
+
+
+def test_compact_through_can_advance_existing_compacted_boundary() -> None:
+    log = RaftLogView(
+        base_index=7,
+        base_term=3,
+        entries=(LogEntry(term=4, command="x"), LogEntry(term=5, command="y")),
+    )
+
+    compacted = log.compact_through(8)
+
+    assert compacted == RaftLogView(
+        base_index=8,
+        base_term=4,
+        entries=(LogEntry(term=5, command="y"),),
+    )
+    assert compacted.last_index == 9
+
+
+def test_compact_through_rejects_boundary_regression_or_unknown_index() -> None:
+    log = RaftLogView(base_index=7, base_term=3, entries=(LogEntry(term=4),))
+
+    with pytest.raises(IndexError, match="precedes current boundary"):
+        log.compact_through(6)
+    with pytest.raises(IndexError, match="exceeds last index"):
+        log.compact_through(9)
+    assert log.compact_through(7) is log
+
+
 def test_merge_after_compacted_boundary_appends_by_absolute_index() -> None:
     retained = (LogEntry(term=4, command="x"), LogEntry(term=5, command="y"))
     log = RaftLogView(base_index=7, base_term=3, entries=retained)
