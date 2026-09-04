@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ._deletion_minimizer import minimize_indexed_sequence
 from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioRunner
+from .simulator import FaultRule
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,32 +45,20 @@ class NonLinearizableFaultScheduleMinimizer:
         if baseline.linearizability.linearizable:
             raise ValueError("fault schedule minimization requires a non-linearizable scenario")
 
-        current = list(enumerate(faults.rules))
-        removed: list[int] = []
+        def preserves_failure(rules: tuple[FaultRule, ...]) -> bool:
+            candidate = SeededFaultSchedule(seed=faults.seed, rules=rules)
+            result = ReplicatedKVScenarioRunner(
+                workload,
+                candidate,
+                node_ids=node_ids,
+                leader_id=leader_id,
+            ).run()
+            return not result.linearizability.linearizable
 
-        while True:
-            changed = False
-            for position in range(len(current)):
-                candidate_entries = current[:position] + current[position + 1 :]
-                candidate = SeededFaultSchedule(
-                    seed=faults.seed,
-                    rules=tuple(rule for _, rule in candidate_entries),
-                )
-                result = ReplicatedKVScenarioRunner(
-                    workload,
-                    candidate,
-                    node_ids=node_ids,
-                    leader_id=leader_id,
-                ).run()
-                if not result.linearizability.linearizable:
-                    original_index, _ = current[position]
-                    removed.append(original_index)
-                    current = candidate_entries
-                    changed = True
-                    break
-            if not changed:
-                break
-
+        current, removed = minimize_indexed_sequence(
+            faults.rules,
+            preserves_failure=preserves_failure,
+        )
         kept = tuple(index for index, _ in current)
         minimized = SeededFaultSchedule(
             seed=faults.seed,
@@ -77,5 +67,5 @@ class NonLinearizableFaultScheduleMinimizer:
         return FaultScheduleMinimizationResult(
             schedule=minimized,
             kept_original_indices=kept,
-            removed_original_indices=tuple(sorted(removed)),
+            removed_original_indices=removed,
         )

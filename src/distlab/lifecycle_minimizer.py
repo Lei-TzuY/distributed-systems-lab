@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .lifecycle import SeededLifecycleSchedule
+from ._deletion_minimizer import minimize_indexed_sequence
+from .lifecycle import NodeLifecycleAction, SeededLifecycleSchedule
 from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioRunner, ScenarioExecutionError
@@ -51,36 +52,24 @@ class NonLinearizableLifecycleScheduleMinimizer:
                 "lifecycle schedule minimization requires a non-linearizable scenario"
             )
 
-        current = list(enumerate(lifecycle.actions))
-        removed: list[int] = []
+        def preserves_failure(actions: tuple[NodeLifecycleAction, ...]) -> bool:
+            candidate = SeededLifecycleSchedule(seed=lifecycle.seed, actions=actions)
+            try:
+                result = ReplicatedKVScenarioRunner(
+                    workload,
+                    faults,
+                    lifecycle=candidate,
+                    node_ids=node_ids,
+                    leader_id=leader_id,
+                ).run()
+            except ScenarioExecutionError:
+                return False
+            return not result.linearizability.linearizable
 
-        while True:
-            changed = False
-            for position in range(len(current)):
-                candidate_entries = current[:position] + current[position + 1 :]
-                candidate = SeededLifecycleSchedule(
-                    seed=lifecycle.seed,
-                    actions=tuple(action for _, action in candidate_entries),
-                )
-                try:
-                    result = ReplicatedKVScenarioRunner(
-                        workload,
-                        faults,
-                        lifecycle=candidate,
-                        node_ids=node_ids,
-                        leader_id=leader_id,
-                    ).run()
-                except ScenarioExecutionError:
-                    continue
-                if not result.linearizability.linearizable:
-                    original_index, _ = current[position]
-                    removed.append(original_index)
-                    current = candidate_entries
-                    changed = True
-                    break
-            if not changed:
-                break
-
+        current, removed = minimize_indexed_sequence(
+            lifecycle.actions,
+            preserves_failure=preserves_failure,
+        )
         kept = tuple(index for index, _ in current)
         minimized = SeededLifecycleSchedule(
             seed=lifecycle.seed,
@@ -89,5 +78,5 @@ class NonLinearizableLifecycleScheduleMinimizer:
         return LifecycleScheduleMinimizationResult(
             schedule=minimized,
             kept_original_indices=kept,
-            removed_original_indices=tuple(sorted(removed)),
+            removed_original_indices=removed,
         )
