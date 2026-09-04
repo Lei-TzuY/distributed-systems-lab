@@ -155,18 +155,26 @@ class RaftCluster:
         nodes = tuple(self.nodes.values())
         for left_index, left in enumerate(nodes):
             for right in nodes[left_index + 1 :]:
-                shared = min(left.last_log_index, right.last_log_index)
-                for index in range(1, shared + 1):
-                    left_entry = left.log[index - 1]
-                    right_entry = right.log[index - 1]
-                    if left_entry.term != right_entry.term:
+                left_log = left.log_view
+                right_log = right.log_view
+                shared = min(left_log.last_index, right_log.last_index)
+                overlap_start = max(left_log.base_index, right_log.base_index)
+                for index in range(overlap_start, shared + 1):
+                    left_term = left_log.term_at(index)
+                    right_term = right_log.term_at(index)
+                    if left_term != right_term:
                         continue
-                    if left.log[:index] != right.log[:index]:
-                        raise LogMatchingViolation(
-                            "Log Matching violated at "
-                            f"index {index}, term {left_entry.term}: "
-                            f"{left.node_id!r} and {right.node_id!r}"
-                        )
+                    retained_start = max(
+                        left_log.first_retained_index,
+                        right_log.first_retained_index,
+                    )
+                    for prefix_index in range(retained_start, index + 1):
+                        if left_log.entry_at(prefix_index) != right_log.entry_at(prefix_index):
+                            raise LogMatchingViolation(
+                                "Log Matching violated at "
+                                f"index {index}, term {left_term}: "
+                                f"{left.node_id!r} and {right.node_id!r}"
+                            )
 
     @property
     def leaders_by_term(self) -> dict[int, str]:
@@ -192,6 +200,8 @@ class RaftNode:
         persistent.setdefault("current_term", 0)
         persistent.setdefault("voted_for", None)
         persistent.setdefault("log", ())
+        persistent.setdefault("log_base_index", 0)
+        persistent.setdefault("log_base_term", 0)
         self._validate_persistent_log()
         self._reset_volatile_defaults()
 
@@ -210,12 +220,30 @@ class RaftNode:
         return tuple(value)
 
     @property
+    def log_base_index(self) -> int:
+        return int(self.sim.persistent_state[self.node_id].get("log_base_index", 0))
+
+    @property
+    def log_base_term(self) -> int:
+        return int(self.sim.persistent_state[self.node_id].get("log_base_term", 0))
+
+    @property
+    def log_view(self):
+        from .log_index import RaftLogView
+
+        return RaftLogView(
+            base_index=self.log_base_index,
+            base_term=self.log_base_term,
+            entries=self.log,
+        )
+
+    @property
     def last_log_index(self) -> int:
-        return len(self.log)
+        return self.log_view.last_index
 
     @property
     def last_log_term(self) -> int:
-        return self.log[-1].term if self.log else 0
+        return self.log_view.last_term
 
     @property
     def role(self) -> RaftRole:
@@ -289,6 +317,8 @@ class RaftNode:
             node=self.node_id,
             term=self.current_term,
             voted_for=self.voted_for,
+            log_base_index=self.log_base_index,
+            log_base_term=self.log_base_term,
             last_log_index=self.last_log_index,
             last_log_term=self.last_log_term,
         )
@@ -338,15 +368,14 @@ class RaftNode:
             raise ValueError(f"unknown peer {peer!r}")
         if prev_log_index is None:
             prev_log_index = self.last_log_index
-        if prev_log_index < 0 or prev_log_index > self.last_log_index:
-            raise ValueError("prev_log_index must reference the leader log")
+        if prev_log_index < self.log_base_index or prev_log_index > self.last_log_index:
+            raise ValueError("prev_log_index must reference the retained leader log")
         if leader_commit is None:
             leader_commit = self.commit_index
         if leader_commit < 0 or leader_commit > self.last_log_index:
             raise ValueError("leader_commit must reference the leader log")
-        from .log_index import RaftLogView
 
-        prev_log_term = RaftLogView.uncompacted(self.log).term_at(prev_log_index)
+        prev_log_term = self.log_view.term_at(prev_log_index)
         self.sim.send(
             self.node_id,
             peer,
@@ -495,16 +524,12 @@ class RaftNode:
         return request.last_log_index >= self.last_log_index
 
     def _prefix_matches(self, prev_log_index: int, prev_log_term: int) -> bool:
-        from .log_index import RaftLogView
-
-        return RaftLogView.uncompacted(self.log).prefix_matches(prev_log_index, prev_log_term)
+        return self.log_view.prefix_matches(prev_log_index, prev_log_term)
 
     def _merge_entries(self, prev_log_index: int, entries: tuple[LogEntry, ...]) -> None:
         if not entries:
             return
-        from .log_index import RaftLogView
-
-        log = RaftLogView.uncompacted(self.log).merge_after(prev_log_index, entries)
+        log = self.log_view.merge_after(prev_log_index, entries)
         self._persist_log(log)
 
     def _advance_term(self, term: int) -> None:
@@ -526,7 +551,13 @@ class RaftNode:
 
     def _persist_log(self, log: tuple[LogEntry, ...]) -> None:
         self.sim.persistent_state[self.node_id]["log"] = log
-        self.sim._record("raft-persist-log", node=self.node_id, log=log)
+        self.sim._record(
+            "raft-persist-log",
+            node=self.node_id,
+            log_base_index=self.log_base_index,
+            log_base_term=self.log_base_term,
+            log=log,
+        )
 
     def _become_leader(self, term: int) -> None:
         if term != self.current_term or self.role is not RaftRole.CANDIDATE:
@@ -540,11 +571,25 @@ class RaftNode:
         return votes >= (len(self.cluster.node_ids) // 2 + 1)
 
     def _validate_persistent_log(self) -> None:
-        log = self.sim.persistent_state[self.node_id].get("log", ())
+        persistent = self.sim.persistent_state[self.node_id]
+        log = persistent.get("log", ())
         if not isinstance(log, (tuple, list)):
             raise TypeError("persistent Raft log must be a sequence of LogEntry values")
         if not all(isinstance(entry, LogEntry) for entry in log):
             raise TypeError("persistent Raft log must contain only LogEntry values")
+        base_index = persistent.get("log_base_index", 0)
+        base_term = persistent.get("log_base_term", 0)
+        if not isinstance(base_index, int):
+            raise TypeError("persistent Raft log base index must be an integer")
+        if not isinstance(base_term, int):
+            raise TypeError("persistent Raft log base term must be an integer")
+        from .log_index import RaftLogView
+
+        RaftLogView(
+            base_index=base_index,
+            base_term=base_term,
+            entries=tuple(log),
+        )
 
     def _reset_volatile_defaults(self) -> None:
         volatile = self.sim.volatile_state[self.node_id]

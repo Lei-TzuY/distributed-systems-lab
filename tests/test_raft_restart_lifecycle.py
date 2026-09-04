@@ -34,6 +34,8 @@ def test_restart_immediately_reconstructs_follower_state_and_records_durable_bou
         "node": "n1",
         "term": 7,
         "voted_for": "n2",
+        "log_base_index": 0,
+        "log_base_term": 0,
         "last_log_index": 2,
         "last_log_term": 7,
     }
