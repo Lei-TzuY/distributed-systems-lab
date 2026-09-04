@@ -169,8 +169,9 @@ class LeaderReplicator:
         majority = len(self.leader.cluster.node_ids) // 2 + 1
         previous = self._commit_index
         log = self.leader.log_view
+        scan_floor = max(previous, log.base_index)
 
-        for index in range(log.last_index, previous, -1):
+        for index in range(log.last_index, scan_floor, -1):
             if log.term_at(index) != self._term:
                 continue
             replicas = 1 + sum(
