@@ -1,7 +1,7 @@
 import pytest
 
 from distlab.log_index import RaftLogView
-from distlab.raft import LogEntry
+from distlab.raft import LogEntry, LogMatchingViolation
 
 
 def test_uncompacted_log_view_preserves_existing_absolute_indexes() -> None:
@@ -58,3 +58,51 @@ def test_log_view_rejects_invalid_boundary_metadata() -> None:
         RaftLogView(base_index=1, base_term=-1, entries=())
     with pytest.raises(ValueError, match="index zero"):
         RaftLogView(base_index=0, base_term=1, entries=())
+
+
+def test_merge_after_compacted_boundary_appends_by_absolute_index() -> None:
+    retained = (LogEntry(term=4, command="x"), LogEntry(term=5, command="y"))
+    log = RaftLogView(base_index=7, base_term=3, entries=retained)
+    incoming = (LogEntry(term=6, command="z"),)
+
+    merged = log.merge_after(9, incoming)
+
+    assert merged == (*retained, *incoming)
+
+
+def test_merge_after_compacted_boundary_truncates_conflicting_retained_suffix() -> None:
+    log = RaftLogView(
+        base_index=7,
+        base_term=3,
+        entries=(
+            LogEntry(term=4, command="x"),
+            LogEntry(term=5, command="stale-y"),
+            LogEntry(term=5, command="stale-z"),
+        ),
+    )
+    incoming = (
+        LogEntry(term=6, command="new-y"),
+        LogEntry(term=6, command="new-z"),
+    )
+
+    merged = log.merge_after(8, incoming)
+
+    assert merged == (LogEntry(term=4, command="x"), *incoming)
+
+
+def test_merge_after_preserves_same_index_term_identity_invariant() -> None:
+    log = RaftLogView(
+        base_index=7,
+        base_term=3,
+        entries=(LogEntry(term=4, command="existing"),),
+    )
+
+    with pytest.raises(LogMatchingViolation, match="index 8"):
+        log.merge_after(7, (LogEntry(term=4, command="different"),))
+
+
+def test_merge_after_rejects_prefix_before_compacted_boundary() -> None:
+    log = RaftLogView(base_index=7, base_term=3, entries=(LogEntry(term=4),))
+
+    with pytest.raises(IndexError, match="outside retained range"):
+        log.merge_after(6, (LogEntry(term=4),))

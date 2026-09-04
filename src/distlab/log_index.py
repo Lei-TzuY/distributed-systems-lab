@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .raft import LogEntry
+from .raft import LogEntry, LogMatchingViolation
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,3 +80,45 @@ class RaftLogView:
         if index < self.base_index or index > self.last_index:
             return False
         return self.term_at(index) == term
+
+    def merge_after(
+        self,
+        prev_index: int,
+        incoming: tuple[LogEntry, ...],
+    ) -> tuple[LogEntry, ...]:
+        """Merge AppendEntries payload after an absolute prefix boundary.
+
+        The returned tuple contains only the retained suffix represented by this
+        view. Entries at or before ``base_index`` are compacted and therefore
+        never reconstructed here.
+        """
+        if prev_index < self.base_index or prev_index > self.last_index:
+            raise IndexError(
+                f"previous log index {prev_index} is outside retained range "
+                f"[{self.base_index}, {self.last_index}]"
+            )
+        if not all(isinstance(entry, LogEntry) for entry in incoming):
+            raise TypeError("incoming log entries must contain only LogEntry values")
+        if not incoming:
+            return self.entries
+
+        retained = list(self.entries)
+        insert_at = prev_index - self.base_index
+        incoming_offset = 0
+        while incoming_offset < len(incoming) and insert_at < len(retained):
+            existing = retained[insert_at]
+            candidate = incoming[incoming_offset]
+            absolute_index = self.base_index + insert_at + 1
+            if existing.term != candidate.term:
+                del retained[insert_at:]
+                break
+            if existing != candidate:
+                raise LogMatchingViolation(
+                    "same index/term identifies different entries at "
+                    f"index {absolute_index}, term {existing.term}"
+                )
+            insert_at += 1
+            incoming_offset += 1
+        if incoming_offset < len(incoming):
+            retained.extend(incoming[incoming_offset:])
+        return tuple(retained)
