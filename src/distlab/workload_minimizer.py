@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ._deletion_minimizer import minimize_indexed_sequence
 from .randomized_faults import SeededFaultSchedule
-from .randomized_workload import SeededClientWorkloadSchedule
+from .randomized_workload import ClientAction, SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioRunner
 
 
@@ -42,32 +43,20 @@ class NonLinearizableClientWorkloadMinimizer:
         if baseline.linearizability.linearizable:
             raise ValueError("client workload minimization requires a non-linearizable scenario")
 
-        current = list(enumerate(workload.actions))
-        removed: list[int] = []
+        def preserves_failure(actions: tuple[ClientAction, ...]) -> bool:
+            candidate = SeededClientWorkloadSchedule(seed=workload.seed, actions=actions)
+            result = ReplicatedKVScenarioRunner(
+                candidate,
+                faults,
+                node_ids=node_ids,
+                leader_id=leader_id,
+            ).run()
+            return not result.linearizability.linearizable
 
-        while True:
-            changed = False
-            for position in range(len(current)):
-                candidate_entries = current[:position] + current[position + 1 :]
-                candidate = SeededClientWorkloadSchedule(
-                    seed=workload.seed,
-                    actions=tuple(action for _, action in candidate_entries),
-                )
-                result = ReplicatedKVScenarioRunner(
-                    candidate,
-                    faults,
-                    node_ids=node_ids,
-                    leader_id=leader_id,
-                ).run()
-                if not result.linearizability.linearizable:
-                    original_index, _ = current[position]
-                    removed.append(original_index)
-                    current = candidate_entries
-                    changed = True
-                    break
-            if not changed:
-                break
-
+        current, removed = minimize_indexed_sequence(
+            workload.actions,
+            preserves_failure=preserves_failure,
+        )
         kept = tuple(index for index, _ in current)
         minimized = SeededClientWorkloadSchedule(
             seed=workload.seed,
@@ -76,5 +65,5 @@ class NonLinearizableClientWorkloadMinimizer:
         return ClientWorkloadMinimizationResult(
             schedule=minimized,
             kept_original_indices=kept,
-            removed_original_indices=tuple(sorted(removed)),
+            removed_original_indices=removed,
         )
