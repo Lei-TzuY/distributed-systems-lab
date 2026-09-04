@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .commit_recovery import CommitRecoveryBarrier
-from .kv import ClientRequest, KVOperation, ReplicatedKV
-from .raft import LogEntry, RaftCluster
+from .kv import ClientRequest, Delete, KVOperation, Put, ReplicatedKV
+from .raft import RaftCluster
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,8 +127,6 @@ class KVSnapshotStore:
 
         state: dict[str, str] = {}
         requests: dict[tuple[str, int], SnapshotClientRequest] = {}
-        from .kv import Delete, Put
-
         for entry in included:
             command = entry.command
             operation: object = command
