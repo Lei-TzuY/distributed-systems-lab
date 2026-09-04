@@ -61,6 +61,25 @@ def test_snapshot_persists_state_and_dedup_identity_across_restart() -> None:
     recovered_kv.applier.assert_state_machine_safety()
 
 
+def test_snapshot_creation_uses_absolute_index_after_durable_compaction() -> None:
+    sim, cluster, kv = _committed_kv()
+    leader = cluster.node("n1")
+    compacted = leader.log_view.compact_through(2)
+    sim.persistent_state["n1"]["log"] = compacted.entries
+    sim.persistent_state["n1"]["log_base_index"] = compacted.base_index
+    sim.persistent_state["n1"]["log_base_term"] = compacted.base_term
+
+    snapshot = KVSnapshotStore(cluster, kv).create("n1")
+
+    assert leader.log_base_index == 2
+    assert leader.last_log_index == 4
+    assert snapshot.last_included_index == 4
+    assert snapshot.last_included_term == leader.log_view.term_at(4) == 1
+    assert snapshot.state == (("k", "v1"),)
+    cluster.assert_log_matching()
+    kv.applier.assert_state_machine_safety()
+
+
 def test_snapshot_rejects_empty_state_machine() -> None:
     sim = Simulator()
     cluster = RaftCluster(sim, ("n1",))
