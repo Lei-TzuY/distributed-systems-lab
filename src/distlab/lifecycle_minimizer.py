@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ._deletion_minimizer import minimize_indexed_sequence
-from .lifecycle import LifecycleAction, SeededLifecycleSchedule
+from .lifecycle import NodeLifecycleAction, SeededLifecycleSchedule
 from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioRunner, ScenarioExecutionError
@@ -52,7 +52,7 @@ class NonLinearizableLifecycleScheduleMinimizer:
                 "lifecycle schedule minimization requires a non-linearizable scenario"
             )
 
-        def preserves_failure(actions: tuple[LifecycleAction, ...]) -> bool:
+        def preserves_failure(actions: tuple[NodeLifecycleAction, ...]) -> bool:
             candidate = SeededLifecycleSchedule(seed=lifecycle.seed, actions=actions)
             try:
                 result = ReplicatedKVScenarioRunner(
