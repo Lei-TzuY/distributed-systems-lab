@@ -73,6 +73,26 @@ class RaftLogView:
             raise IndexError(f"log index {index} exceeds append position {self.last_index + 1}")
         return self.entries[index - self.first_retained_index :]
 
+    def compact_through(self, index: int) -> RaftLogView:
+        """Discard the retained prefix through ``index`` while preserving its term.
+
+        Compaction is expressed entirely in absolute Raft indexes. The resulting
+        boundary carries the term at ``index`` so vote freshness and
+        AppendEntries prefix checks can continue to reason about the compacted
+        entry without reconstructing discarded commands.
+        """
+        if index < self.base_index:
+            raise IndexError(
+                f"compaction index {index} precedes current boundary {self.base_index}"
+            )
+        if index > self.last_index:
+            raise IndexError(f"compaction index {index} exceeds last index {self.last_index}")
+        if index == self.base_index:
+            return self
+        boundary_term = self.term_at(index)
+        retained = self.entries[index - self.base_index :]
+        return RaftLogView(base_index=index, base_term=boundary_term, entries=retained)
+
     def prefix_matches(self, index: int, term: int) -> bool:
         """Check an AppendEntries-style absolute index/term boundary."""
         if term < 0:
