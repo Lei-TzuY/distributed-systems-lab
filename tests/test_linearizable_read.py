@@ -87,12 +87,14 @@ def test_isolated_leader_cannot_serve_local_value_as_linearizable() -> None:
 
 
 def test_stale_replicator_cannot_authorize_read_after_new_term() -> None:
-    _, cluster, replicator, kv = _elect_leader_with_old_value()
+    sim, cluster, replicator, kv = _elect_leader_with_old_value()
     _commit_current_term_barrier(replicator)
 
     leader = cluster.node("n1")
     leader.start_election()
+    sim.run()
     assert leader.current_term == 4
+    assert leader.role is RaftRole.LEADER
 
     reader = LinearizableKVReader(kv, replicator)
     with pytest.raises(LinearizableReadError, match="stale"):
