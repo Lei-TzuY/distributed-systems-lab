@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .raft import RaftNode, RaftRole
+
+if TYPE_CHECKING:
+    from .snapshot_transport import SnapshotTransport
 
 
 class ReplicationError(RuntimeError):
@@ -10,7 +14,7 @@ class ReplicationError(RuntimeError):
 
 
 class ReplicationResponseMissing(ReplicationError):
-    """Raised when a probe produces no matching AppendEntries response."""
+    """Raised when a replication probe produces no matching response."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,9 +26,15 @@ class PeerReplicationProgress:
 class LeaderReplicator:
     """Deterministically drive leader replication and commit propagation."""
 
-    def __init__(self, leader: RaftNode) -> None:
+    def __init__(
+        self,
+        leader: RaftNode,
+        *,
+        snapshot_transport: SnapshotTransport | None = None,
+    ) -> None:
         self.leader = leader
         self.sim = leader.sim
+        self.snapshot_transport = snapshot_transport
         self._term = leader.current_term
         self._commit_index = leader.commit_index
         self._progress = {
@@ -35,6 +45,8 @@ class LeaderReplicator:
             for peer in leader.peers
         }
         self._require_current_leader()
+        if snapshot_transport is not None and snapshot_transport.cluster is not leader.cluster:
+            raise ValueError("snapshot transport must belong to the leader cluster")
 
     @property
     def term(self) -> int:
@@ -59,8 +71,11 @@ class LeaderReplicator:
             attempts += 1
             progress = self._progress[peer]
             next_index = progress.next_index
-            prev_log_index = next_index - 1
             log = self.leader.log_view
+            if next_index <= log.base_index:
+                return self._replicate_snapshot(peer, progress, attempts)
+
+            prev_log_index = next_index - 1
             entries = log.suffix_from(next_index)
             trace_start = len(self.sim.trace)
 
@@ -83,7 +98,7 @@ class LeaderReplicator:
             )
             self.sim.run()
 
-            response = self._matching_response(peer, trace_start)
+            response = self._matching_response(peer, trace_start, kind="raft-append-response")
             if response is None:
                 raise ReplicationResponseMissing(
                     f"no AppendEntries response from {peer!r} for leader "
@@ -92,21 +107,7 @@ class LeaderReplicator:
 
             if bool(response.details["success"]):
                 match_index = int(response.details["match_index"])
-                old_match_index = progress.match_index
-                new_match_index = max(old_match_index, match_index)
-                self._progress[peer] = PeerReplicationProgress(
-                    next_index=new_match_index + 1,
-                    match_index=new_match_index,
-                )
-                self.sim._record(
-                    "raft-replication-advance",
-                    leader=self.leader.node_id,
-                    follower=peer,
-                    term=self._term,
-                    previous_match_index=old_match_index,
-                    match_index=new_match_index,
-                    next_index=new_match_index + 1,
-                )
+                self._advance_peer(peer, progress, match_index, source="append")
                 self.advance_commit_index()
                 return True
 
@@ -195,9 +196,92 @@ class LeaderReplicator:
 
         return self._commit_index
 
-    def _matching_response(self, peer: str, trace_start: int):
+    def _replicate_snapshot(
+        self,
+        peer: str,
+        progress: PeerReplicationProgress,
+        attempt: int,
+    ) -> bool:
+        transport = self.snapshot_transport
+        if transport is None:
+            raise ReplicationError(
+                "replication crossed the compacted log boundary without snapshot transport"
+            )
+        snapshot = transport.store.latest(self.leader.node_id)
+        if snapshot is None:
+            raise ReplicationError("compacted leader has no durable snapshot to install")
+        log = self.leader.log_view
+        if (
+            snapshot.last_included_index != log.base_index
+            or snapshot.last_included_term != log.base_term
+        ):
+            raise ReplicationError("leader snapshot does not match compacted log boundary")
+
+        trace_start = len(self.sim.trace)
+        self.sim._record(
+            "raft-replication-snapshot",
+            leader=self.leader.node_id,
+            follower=peer,
+            term=self._term,
+            next_index=progress.next_index,
+            last_included_index=snapshot.last_included_index,
+            last_included_term=snapshot.last_included_term,
+            attempt=attempt,
+        )
+        transport.send_install_snapshot(
+            leader_id=self.leader.node_id,
+            follower_id=peer,
+            term=self._term,
+            snapshot=snapshot,
+        )
+        self.sim.run()
+
+        response = self._matching_response(
+            peer,
+            trace_start,
+            kind="raft-install-snapshot-response",
+        )
+        if response is None:
+            raise ReplicationResponseMissing(
+                f"no InstallSnapshot response from {peer!r} for leader "
+                f"{self.leader.node_id!r} in term {self._term}"
+            )
+        if not bool(response.details["success"]):
+            return False
+
+        match_index = int(response.details["last_included_index"])
+        self._advance_peer(peer, progress, match_index, source="snapshot")
+        self.advance_commit_index()
+        return True
+
+    def _advance_peer(
+        self,
+        peer: str,
+        progress: PeerReplicationProgress,
+        match_index: int,
+        *,
+        source: str,
+    ) -> None:
+        old_match_index = progress.match_index
+        new_match_index = max(old_match_index, match_index)
+        self._progress[peer] = PeerReplicationProgress(
+            next_index=new_match_index + 1,
+            match_index=new_match_index,
+        )
+        self.sim._record(
+            "raft-replication-advance",
+            leader=self.leader.node_id,
+            follower=peer,
+            term=self._term,
+            previous_match_index=old_match_index,
+            match_index=new_match_index,
+            next_index=new_match_index + 1,
+            source=source,
+        )
+
+    def _matching_response(self, peer: str, trace_start: int, *, kind: str):
         for record in reversed(self.sim.trace[trace_start:]):
-            if record.kind != "raft-append-response":
+            if record.kind != kind:
                 continue
             if record.details.get("leader") != self.leader.node_id:
                 continue
