@@ -72,9 +72,16 @@ class StateMachineApplier:
         if commit_index > node.last_log_index:
             raise AssertionError("commit index cannot exceed the local Raft log")
 
+        log = node.log_view
+        if previous < log.base_index:
+            raise StateMachineSafetyViolation(
+                "durable applied history does not reach the compacted Raft boundary for "
+                f"{node_id!r}: last_applied={previous}, log_base_index={log.base_index}"
+            )
+
         applied_now: list[AppliedEntry] = []
         for index in range(previous + 1, commit_index + 1):
-            entry = node.log[index - 1]
+            entry = log.entry_at(index)
             record = AppliedEntry(node_id=node_id, index=index, entry=entry)
             self._record_canonical(record)
 
@@ -129,12 +136,22 @@ class StateMachineApplier:
         if not isinstance(value, tuple) or not all(isinstance(entry, LogEntry) for entry in value):
             raise TypeError("durable state-machine history must be a tuple of LogEntry values")
 
-        log = self.cluster.node(node_id).log
-        if len(value) > len(log):
+        log = self.cluster.node(node_id).log_view
+        if log.base_index > len(value):
+            raise StateMachineSafetyViolation(
+                f"compacted Raft boundary for {node_id!r} exceeds durable applied history"
+            )
+        if len(value) > log.last_index:
             raise StateMachineSafetyViolation(
                 f"durable applied history for {node_id!r} exceeds the persistent Raft log"
             )
-        if log[: len(value)] != value:
+        if log.base_index > 0 and value[log.base_index - 1].term != log.base_term:
+            raise StateMachineSafetyViolation(
+                f"durable applied history for {node_id!r} diverges at compacted boundary"
+            )
+
+        retained_applied = value[log.base_index :]
+        if log.entries[: len(retained_applied)] != retained_applied:
             raise StateMachineSafetyViolation(
                 f"durable applied history for {node_id!r} diverges from the persistent Raft log"
             )

@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 from .commit_recovery import CommitRecoveryBarrier
 from .kv import ClientRequest, Delete, KVOperation, Put, ReplicatedKV
-from .log_index import RaftLogView
 from .raft import RaftCluster
 
 
@@ -76,10 +75,9 @@ class KVSnapshotStore:
         node = self.cluster.node(node_id)
         if last_applied > node.last_log_index:
             raise AssertionError("applied index cannot exceed the local Raft log")
-        log = RaftLogView.uncompacted(node.log)
         snapshot = KVSnapshot(
             last_included_index=last_applied,
-            last_included_term=log.term_at(last_applied),
+            last_included_term=node.log_view.term_at(last_applied),
             state=tuple(sorted(self.kv.snapshot(node_id).items())),
             client_requests=self._client_requests(node_id, last_applied),
         )
