@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .raft import RaftNode, RaftRole
+from .raft import AppendEntriesResponse, RaftNode, RaftRole
 
 if TYPE_CHECKING:
     from .snapshot_transport import SnapshotTransport
@@ -79,6 +79,7 @@ class LeaderReplicator:
             prev_log_index = next_index - 1
             entries = log.suffix_from(next_index)
             expected_match_index = prev_log_index + len(entries)
+            response_ordinal_floor = self._append_response_ordinal_floor(peer)
             trace_start = len(self.sim.trace)
 
             self.sim._record(
@@ -92,6 +93,7 @@ class LeaderReplicator:
                 expected_match_index=expected_match_index,
                 leader_commit=self._commit_index,
                 attempt=attempts,
+                response_ordinal_floor=response_ordinal_floor,
             )
             self.leader.send_append_entries(
                 peer,
@@ -108,6 +110,7 @@ class LeaderReplicator:
                 expected_match_index=expected_match_index,
                 expected_prev_log_index=prev_log_index,
                 expected_entry_count=len(entries),
+                response_ordinal_floor=response_ordinal_floor,
             )
             if response is None:
                 raise ReplicationResponseMissing(
@@ -308,8 +311,10 @@ class LeaderReplicator:
         expected_match_index: int | None = None,
         expected_prev_log_index: int | None = None,
         expected_entry_count: int | None = None,
+        response_ordinal_floor: int | None = None,
     ):
-        for record in reversed(self.sim.trace[trace_start:]):
+        for index in range(len(self.sim.trace) - 1, trace_start - 1, -1):
+            record = self.sim.trace[index]
             if record.kind != kind:
                 continue
             if record.details.get("leader") != self.leader.node_id:
@@ -317,6 +322,17 @@ class LeaderReplicator:
             if record.details.get("follower") != peer:
                 continue
             if int(record.details.get("term", -1)) != self._term:
+                continue
+            if (
+                response_ordinal_floor is not None
+                and not self._append_response_delivered_after(
+                    peer,
+                    index,
+                    response_ordinal_floor,
+                    success=bool(record.details.get("success")),
+                    match_index=int(record.details.get("match_index", -1)),
+                )
+            ):
                 continue
             if (
                 requested_last_included_index is not None
@@ -347,6 +363,45 @@ class LeaderReplicator:
                 continue
             return record
         return None
+
+    def _append_response_ordinal_floor(self, peer: str) -> int:
+        floor = 0
+        for record in self.sim.trace:
+            if record.kind != "send":
+                continue
+            if record.details.get("src") != peer or record.details.get("dst") != self.leader.node_id:
+                continue
+            if not isinstance(record.details.get("payload"), AppendEntriesResponse):
+                continue
+            floor = max(floor, int(record.details.get("ordinal", 0)))
+        return floor
+
+    def _append_response_delivered_after(
+        self,
+        peer: str,
+        response_index: int,
+        ordinal_floor: int,
+        *,
+        success: bool,
+        match_index: int,
+    ) -> bool:
+        if response_index <= 0:
+            return False
+        delivery = self.sim.trace[response_index - 1]
+        if delivery.kind != "deliver":
+            return False
+        if delivery.details.get("src") != peer or delivery.details.get("dst") != self.leader.node_id:
+            return False
+        if int(delivery.details.get("ordinal", 0)) <= ordinal_floor:
+            return False
+        payload = delivery.details.get("payload")
+        return (
+            isinstance(payload, AppendEntriesResponse)
+            and payload.term == self._term
+            and payload.follower_id == peer
+            and payload.success is success
+            and payload.match_index == match_index
+        )
 
     def _append_probe_observed(
         self,
