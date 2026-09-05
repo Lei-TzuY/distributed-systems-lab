@@ -369,7 +369,10 @@ class LeaderReplicator:
         for record in self.sim.trace:
             if record.kind != "send":
                 continue
-            if record.details.get("src") != peer or record.details.get("dst") != self.leader.node_id:
+            if (
+                record.details.get("src") != peer
+                or record.details.get("dst") != self.leader.node_id
+            ):
                 continue
             if not isinstance(record.details.get("payload"), AppendEntriesResponse):
                 continue
@@ -390,7 +393,10 @@ class LeaderReplicator:
         delivery = self.sim.trace[response_index - 1]
         if delivery.kind != "deliver":
             return False
-        if delivery.details.get("src") != peer or delivery.details.get("dst") != self.leader.node_id:
+        if (
+            delivery.details.get("src") != peer
+            or delivery.details.get("dst") != self.leader.node_id
+        ):
             return False
         if int(delivery.details.get("ordinal", 0)) <= ordinal_floor:
             return False
