@@ -28,12 +28,15 @@ class InstallSnapshotResponse:
     follower_id: str
     success: bool
     last_included_index: int
+    requested_last_included_index: int
 
     def __post_init__(self) -> None:
         if self.term < 0:
             raise ValueError("term must be non-negative")
         if self.last_included_index < 0:
             raise ValueError("last_included_index must be non-negative")
+        if self.requested_last_included_index < 0:
+            raise ValueError("requested_last_included_index must be non-negative")
 
 
 class SnapshotTransport:
@@ -153,6 +156,7 @@ class SnapshotTransport:
             follower_id=request.follower_id,
             success=success,
             last_included_index=installed_index,
+            requested_last_included_index=request.snapshot.last_included_index,
         )
         self.sim.send(
             request.follower_id,
@@ -174,4 +178,5 @@ class SnapshotTransport:
             term=response.term,
             success=response.success,
             last_included_index=response.last_included_index,
+            requested_last_included_index=response.requested_last_included_index,
         )
