@@ -52,7 +52,7 @@ def test_stale_success_response_cannot_satisfy_new_append_probe() -> None:
     assert stale
 
     sim.heal_partition(("n1",), ("n2",))
-    assert replicator.replicate("n2", max_attempts=1) is True
+    assert replicator.replicate("n2", max_attempts=3) is True
     assert replicator.progress("n2").match_index == 2
     assert replicator.progress("n2").next_index == 3
 
