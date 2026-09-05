@@ -106,6 +106,8 @@ class LeaderReplicator:
                 trace_start,
                 kind="raft-append-response",
                 expected_match_index=expected_match_index,
+                expected_prev_log_index=prev_log_index,
+                expected_entry_count=len(entries),
             )
             if response is None:
                 raise ReplicationResponseMissing(
@@ -304,6 +306,8 @@ class LeaderReplicator:
         requested_last_included_index: int | None = None,
         request_id: int | None = None,
         expected_match_index: int | None = None,
+        expected_prev_log_index: int | None = None,
+        expected_entry_count: int | None = None,
     ):
         for record in reversed(self.sim.trace[trace_start:]):
             if record.kind != kind:
@@ -328,8 +332,51 @@ class LeaderReplicator:
                 and int(record.details.get("match_index", -1)) != expected_match_index
             ):
                 continue
+            if (
+                expected_prev_log_index is not None
+                and expected_entry_count is not None
+                and not self._append_probe_observed(
+                    peer,
+                    trace_start,
+                    prev_log_index=expected_prev_log_index,
+                    entry_count=expected_entry_count,
+                    success=bool(record.details.get("success")),
+                    match_index=int(record.details.get("match_index", -1)),
+                )
+            ):
+                continue
             return record
         return None
+
+    def _append_probe_observed(
+        self,
+        peer: str,
+        trace_start: int,
+        *,
+        prev_log_index: int,
+        entry_count: int,
+        success: bool,
+        match_index: int,
+    ) -> bool:
+        for record in self.sim.trace[trace_start:]:
+            if record.kind != "raft-append-entries":
+                continue
+            if record.details.get("leader") != self.leader.node_id:
+                continue
+            if record.details.get("follower") != peer:
+                continue
+            if int(record.details.get("term", -1)) != self._term:
+                continue
+            if int(record.details.get("prev_log_index", -1)) != prev_log_index:
+                continue
+            if int(record.details.get("entry_count", -1)) != entry_count:
+                continue
+            if bool(record.details.get("success")) != success:
+                continue
+            if int(record.details.get("match_index", -1)) != match_index:
+                continue
+            return True
+        return False
 
     def _require_current_leader(self) -> None:
         if not self.sim.is_alive(self.leader.node_id):
