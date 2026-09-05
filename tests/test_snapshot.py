@@ -195,11 +195,13 @@ def test_snapshot_install_advances_lagging_follower_durable_state() -> None:
 
 
 def test_snapshot_install_rejects_discarding_newer_retained_suffix() -> None:
-    sim, cluster, kv = _committed_kv()
+    _, cluster, kv = _committed_kv()
     store = KVSnapshotStore(cluster, kv)
     snapshot = store.compact("n1")
     follower = cluster.node("n2")
-    follower._persist_log((*follower.log, LogEntry(term=1, command=Put("later", "value"))))
+    follower._persist_log(
+        (*follower.log, LogEntry(term=1, command=Put("later", "value")))
+    )
 
     with pytest.raises(ValueError, match="retained suffix"):
         store.install("n2", snapshot)
