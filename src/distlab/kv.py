@@ -110,7 +110,11 @@ class ReplicatedKV:
         self._require_node(node_id)
         node = self.cluster.node(node_id)
         start = self.applier.last_applied(node_id) + 1
-        pending = node.log[start - 1 : node.commit_index] if node.commit_index >= start else ()
+        if node.commit_index >= start:
+            count = node.commit_index - start + 1
+            pending = node.log_view.suffix_from(start)[:count]
+        else:
+            pending = ()
         self._validate_entries(pending)
         self._validate_request_conflicts(node_id, pending)
 
