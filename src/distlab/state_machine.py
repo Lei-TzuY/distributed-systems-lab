@@ -153,7 +153,7 @@ class StateMachineApplier:
         retained_applied = value[log.base_index :]
         if log.entries[: len(retained_applied)] != retained_applied:
             raise StateMachineSafetyViolation(
-                f"durable applied history for {node_id!r} diverges from the retained Raft log"
+                f"durable applied history for {node_id!r} diverges from the persistent Raft log"
             )
         return value
 
