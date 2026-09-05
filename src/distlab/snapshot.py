@@ -125,14 +125,19 @@ class KVSnapshotStore:
         )
         return snapshot
 
-    def install(self, node_id: str, snapshot: KVSnapshot) -> None:
+    def install(
+        self,
+        node_id: str,
+        snapshot: KVSnapshot,
+        *,
+        preserve_matching_suffix: bool = False,
+    ) -> None:
         """Install a newer durable snapshot into a follower behind its boundary.
 
-        This receiver-side primitive intentionally handles the lagging-follower
-        case where the local log does not extend past the incoming snapshot. A
-        future transport slice can invoke it from InstallSnapshot RPC delivery;
-        preserving a matching suffix beyond the snapshot boundary remains a
-        separate optimization and is rejected here rather than silently losing it.
+        Protocol delivery may preserve entries strictly after the snapshot when
+        the follower still retains a matching index/term boundary. Direct callers
+        remain conservative by default so they cannot silently retain or discard
+        a suffix without opting into the Raft matching rule.
         """
         self._require_node(node_id)
         if not isinstance(snapshot, KVSnapshot):
@@ -149,18 +154,32 @@ class KVSnapshotStore:
                 return
         if snapshot.last_included_index < node.log_base_index:
             raise ValueError("installed snapshot cannot precede the local Raft boundary")
+
+        retained_suffix = ()
         if node.last_log_index > snapshot.last_included_index:
-            raise ValueError(
-                "snapshot install cannot discard a retained suffix beyond its boundary"
-            )
+            if not preserve_matching_suffix:
+                raise ValueError(
+                    "snapshot install cannot discard a retained suffix beyond its boundary"
+                )
+            if not node.log_view.prefix_matches(
+                snapshot.last_included_index,
+                snapshot.last_included_term,
+            ):
+                raise ValueError(
+                    "snapshot install cannot preserve retained suffix without a matching boundary"
+                )
+            retained_suffix = node.log_view.suffix_from(snapshot.last_included_index + 1)
+
+        previous_applied_index = self.kv.applier.last_applied(node_id)
+        if previous_applied_index > snapshot.last_included_index:
+            raise ValueError("snapshot install cannot roll back applied state beyond its boundary")
 
         persistent = self.sim.persistent_state[node_id]
         previous_log_base_index = node.log_base_index
         previous_last_log_index = node.last_log_index
-        previous_applied_index = self.kv.applier.last_applied(node_id)
 
         persistent[self._PERSISTENT_KEY] = snapshot
-        persistent["log"] = ()
+        persistent["log"] = retained_suffix
         persistent["log_base_index"] = snapshot.last_included_index
         persistent["log_base_term"] = snapshot.last_included_term
         persistent["state_machine_applied"] = ()
@@ -189,6 +208,7 @@ class KVSnapshotStore:
             previous_applied_index=previous_applied_index,
             last_included_index=snapshot.last_included_index,
             last_included_term=snapshot.last_included_term,
+            retained_count=len(retained_suffix),
             key_count=len(snapshot.state),
             client_request_count=len(snapshot.client_requests),
         )
