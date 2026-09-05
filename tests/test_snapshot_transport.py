@@ -104,6 +104,9 @@ def test_snapshot_recovery_obeys_logical_partition_and_retries_after_heal() -> N
     replicator = LeaderReplicator(leader, snapshot_transport=transport)
     follower = cluster.node("n3")
 
+    assert replicator.replicate("n3", max_attempts=1) is False
+    assert replicator.progress("n3").next_index == snapshot.last_included_index
+
     sim.partition(("n1",), ("n3",))
     with pytest.raises(ReplicationResponseMissing, match="no InstallSnapshot response"):
         replicator.recover_peer("n3", max_attempts=1)
@@ -125,9 +128,7 @@ def test_snapshot_recovery_obeys_logical_partition_and_retries_after_heal() -> N
 
 
 def test_snapshot_recovery_obeys_explicit_logical_drop_rule() -> None:
-    sim = Simulator(
-        fault_plan=FaultPlan((FaultRule(FaultAction.DROP, src="n1", dst="n3"),))
-    )
+    sim = Simulator()
     cluster = RaftCluster(sim, ("n1", "n2", "n3"))
     leader = cluster.node("n1")
     leader.start_election()
@@ -150,6 +151,10 @@ def test_snapshot_recovery_obeys_explicit_logical_drop_rule() -> None:
     transport = SnapshotTransport(store)
     replicator = LeaderReplicator(leader, snapshot_transport=transport)
     follower = cluster.node("n3")
+
+    assert replicator.replicate("n3", max_attempts=1) is False
+    assert replicator.progress("n3").next_index == snapshot.last_included_index
+    sim.fault_plan = FaultPlan((FaultRule(FaultAction.DROP, src="n1", dst="n3"),))
     trace_start = len(sim.trace)
 
     with pytest.raises(ReplicationResponseMissing, match="no InstallSnapshot response"):
