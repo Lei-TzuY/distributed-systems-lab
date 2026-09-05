@@ -150,7 +150,9 @@ class KVSnapshotStore:
         if snapshot.last_included_index < node.log_base_index:
             raise ValueError("installed snapshot cannot precede the local Raft boundary")
         if node.last_log_index > snapshot.last_included_index:
-            raise ValueError("snapshot install cannot discard a retained suffix beyond its boundary")
+            raise ValueError(
+                "snapshot install cannot discard a retained suffix beyond its boundary"
+            )
 
         persistent = self.sim.persistent_state[node_id]
         previous_log_base_index = node.log_base_index
@@ -173,7 +175,8 @@ class KVSnapshotStore:
 
         self.kv._state[node_id] = dict(snapshot.state)
         self.kv._requests[node_id] = {
-            (item.client_id, item.request_id): item.operation for item in snapshot.client_requests
+            (item.client_id, item.request_id): item.operation
+            for item in snapshot.client_requests
         }
         if node.commit_index < snapshot.last_included_index:
             node.advance_commit_index(snapshot.last_included_index, source="install-snapshot")
