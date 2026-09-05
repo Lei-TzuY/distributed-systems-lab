@@ -89,6 +89,42 @@ def test_snapshot_creation_uses_absolute_index_after_durable_compaction() -> Non
     kv.applier.assert_state_machine_safety()
 
 
+def test_snapshot_compaction_discards_covered_log_and_survives_restart() -> None:
+    sim, cluster, kv = _committed_kv()
+    leader = cluster.node("n1")
+    store = KVSnapshotStore(cluster, kv)
+
+    snapshot = store.compact("n1")
+
+    assert snapshot.last_included_index == 4
+    assert leader.log_base_index == 4
+    assert leader.log_base_term == snapshot.last_included_term == 1
+    assert leader.log == ()
+    assert leader.last_log_index == 4
+    assert leader.last_log_term == 1
+
+    compactions = [record for record in sim.trace if record.kind == "raft-log-compact"]
+    assert len(compactions) == 1
+    assert compactions[0].details["previous_base_index"] == 0
+    assert compactions[0].details["log_base_index"] == 4
+    assert compactions[0].details["previous_retained_count"] == 4
+    assert compactions[0].details["retained_count"] == 0
+
+    sim.crash("n1")
+    sim.restart("n1")
+    recovered_kv = ReplicatedKV(cluster)
+    recovered_store = KVSnapshotStore(cluster, recovered_kv)
+
+    assert recovered_store.latest("n1") == snapshot
+    assert leader.log_base_index == 4
+    assert leader.log == ()
+    assert leader.last_log_index == 4
+    assert recovered_kv.snapshot("n1") == {"k": "v1"}
+    assert recovered_kv.has_applied_request("n1", "client-a", 1)
+    cluster.assert_log_matching()
+    recovered_kv.applier.assert_state_machine_safety()
+
+
 def test_snapshot_rejects_empty_state_machine() -> None:
     sim = Simulator()
     cluster = RaftCluster(sim, ("n1",))
