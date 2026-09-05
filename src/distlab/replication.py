@@ -37,6 +37,7 @@ class LeaderReplicator:
         self.snapshot_transport = snapshot_transport
         self._term = leader.current_term
         self._commit_index = leader.commit_index
+        self._snapshot_request_id = 0
         self._progress = {
             peer: PeerReplicationProgress(
                 next_index=leader.last_log_index + 1,
@@ -217,6 +218,8 @@ class LeaderReplicator:
         ):
             raise ReplicationError("leader snapshot does not match compacted log boundary")
 
+        self._snapshot_request_id += 1
+        request_id = self._snapshot_request_id
         trace_start = len(self.sim.trace)
         self.sim._record(
             "raft-replication-snapshot",
@@ -227,12 +230,14 @@ class LeaderReplicator:
             last_included_index=snapshot.last_included_index,
             last_included_term=snapshot.last_included_term,
             attempt=attempt,
+            request_id=request_id,
         )
         transport.send_install_snapshot(
             leader_id=self.leader.node_id,
             follower_id=peer,
             term=self._term,
             snapshot=snapshot,
+            request_id=request_id,
         )
         self.sim.run()
         if self.leader.current_term != self._term:
@@ -243,6 +248,7 @@ class LeaderReplicator:
             trace_start,
             kind="raft-install-snapshot-response",
             requested_last_included_index=snapshot.last_included_index,
+            request_id=request_id,
         )
         if response is None:
             raise ReplicationResponseMissing(
@@ -289,6 +295,7 @@ class LeaderReplicator:
         *,
         kind: str,
         requested_last_included_index: int | None = None,
+        request_id: int | None = None,
     ):
         for record in reversed(self.sim.trace[trace_start:]):
             if record.kind != kind:
@@ -304,6 +311,8 @@ class LeaderReplicator:
                 and int(record.details.get("requested_last_included_index", -1))
                 != requested_last_included_index
             ):
+                continue
+            if request_id is not None and int(record.details.get("request_id", -1)) != request_id:
                 continue
             return record
         return None
