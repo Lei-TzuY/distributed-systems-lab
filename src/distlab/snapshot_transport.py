@@ -13,12 +13,15 @@ class InstallSnapshotRequest:
     leader_id: str
     follower_id: str
     snapshot: KVSnapshot
+    request_id: int = 0
 
     def __post_init__(self) -> None:
         if self.term < 0:
             raise ValueError("term must be non-negative")
         if not self.leader_id or not self.follower_id:
             raise ValueError("snapshot endpoints must be non-empty")
+        if self.request_id < 0:
+            raise ValueError("request_id must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +32,7 @@ class InstallSnapshotResponse:
     success: bool
     last_included_index: int
     requested_last_included_index: int
+    request_id: int = 0
 
     def __post_init__(self) -> None:
         if self.term < 0:
@@ -37,6 +41,8 @@ class InstallSnapshotResponse:
             raise ValueError("last_included_index must be non-negative")
         if self.requested_last_included_index < 0:
             raise ValueError("requested_last_included_index must be non-negative")
+        if self.request_id < 0:
+            raise ValueError("request_id must be non-negative")
 
 
 class SnapshotTransport:
@@ -70,9 +76,12 @@ class SnapshotTransport:
         follower_id: str,
         term: int,
         snapshot: KVSnapshot,
+        request_id: int = 0,
     ) -> None:
         if leader_id not in self.cluster.nodes or follower_id not in self.cluster.nodes:
             raise ValueError("snapshot transport requires known Raft nodes")
+        if request_id < 0:
+            raise ValueError("request_id must be non-negative")
         self.sim._record(
             "raft-install-snapshot-request",
             leader=leader_id,
@@ -80,6 +89,7 @@ class SnapshotTransport:
             term=term,
             last_included_index=snapshot.last_included_index,
             last_included_term=snapshot.last_included_term,
+            request_id=request_id,
         )
         self.sim.send(
             leader_id,
@@ -89,6 +99,7 @@ class SnapshotTransport:
                 leader_id=leader_id,
                 follower_id=follower_id,
                 snapshot=snapshot,
+                request_id=request_id,
             ),
             delivery_dst=self.endpoint(follower_id),
         )
@@ -157,6 +168,7 @@ class SnapshotTransport:
             success=success,
             last_included_index=installed_index,
             requested_last_included_index=request.snapshot.last_included_index,
+            request_id=request.request_id,
         )
         self.sim.send(
             request.follower_id,
@@ -179,4 +191,5 @@ class SnapshotTransport:
             success=response.success,
             last_included_index=response.last_included_index,
             requested_last_included_index=response.requested_last_included_index,
+            request_id=response.request_id,
         )
