@@ -2,7 +2,12 @@ import pytest
 
 from distlab.kv import ClientRequest, Put, ReplicatedKV
 from distlab.raft import LogEntry, RaftCluster, RaftRole
-from distlab.replication import LeaderReplicator, ReplicationResponseMissing
+from distlab.raft_invariants import RaftSafetyHarness
+from distlab.replication import (
+    LeaderReplicator,
+    ReplicationError,
+    ReplicationResponseMissing,
+)
 from distlab.simulator import FaultAction, FaultPlan, FaultRule, Simulator
 from distlab.snapshot import KVSnapshotStore
 from distlab.snapshot_transport import SnapshotTransport
@@ -174,4 +179,54 @@ def test_snapshot_recovery_obeys_explicit_logical_drop_rule() -> None:
     assert kv.snapshot("n3") == {"k": "v2"}
 
     cluster.assert_log_matching()
+    kv.applier.assert_state_machine_safety()
+
+
+def test_snapshot_response_with_higher_term_stops_stale_replicator() -> None:
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    safety = RaftSafetyHarness(cluster)
+    leader = cluster.node("n1")
+    leader.start_election()
+    sim.run()
+    assert leader.role is RaftRole.LEADER
+    safety.checkpoint()
+
+    leader._persist_log(
+        (
+            LogEntry(term=leader.current_term, command=Put("k", "v1")),
+            LogEntry(term=leader.current_term, command=Put("k", "v2")),
+        )
+    )
+    initial = LeaderReplicator(leader)
+    assert initial.replicate("n2") is True
+
+    kv = ReplicatedKV(cluster)
+    kv.apply_committed("n1")
+    store = KVSnapshotStore(cluster, kv)
+    snapshot = store.compact("n1")
+    transport = SnapshotTransport(store)
+    replicator = LeaderReplicator(leader, snapshot_transport=transport)
+    follower = cluster.node("n3")
+
+    assert replicator.replicate("n3", max_attempts=1) is False
+    assert replicator.progress("n3").next_index == snapshot.last_included_index
+    progress_before = replicator.progress("n3")
+    higher_term = leader.current_term + 1
+    follower._advance_term(higher_term)
+
+    with pytest.raises(ReplicationError, match="replicator term is stale"):
+        replicator.replicate("n3", max_attempts=1)
+
+    assert leader.current_term == higher_term
+    assert leader.role is RaftRole.FOLLOWER
+    assert replicator.progress("n3") == progress_before
+    responses = [
+        record for record in sim.trace if record.kind == "raft-install-snapshot-response"
+    ]
+    assert responses[-1].details["term"] == higher_term
+    assert responses[-1].details["success"] is False
+    assert follower.log_base_index == 0
+
+    safety.checkpoint()
     kv.applier.assert_state_machine_safety()
