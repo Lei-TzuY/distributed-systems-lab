@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .raft import RaftRole
 from .simulator import Message, Simulator
 from .snapshot import KVSnapshot, KVSnapshotStore
 
@@ -119,6 +120,10 @@ class SnapshotTransport:
         else:
             if request.term > follower.current_term:
                 follower._advance_term(request.term)
+            volatile = self.sim.volatile_state[request.follower_id]
+            volatile["role"] = RaftRole.FOLLOWER.value
+            volatile["votes_received"] = set()
+            follower.reset_election_timeout(reason="install-snapshot")
             latest = self.store.latest(request.follower_id)
             if (
                 latest is not None
