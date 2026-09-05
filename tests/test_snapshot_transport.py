@@ -1,0 +1,79 @@
+from distlab.kv import ClientRequest, Put, ReplicatedKV
+from distlab.raft import LogEntry, RaftCluster, RaftRole
+from distlab.replication import LeaderReplicator
+from distlab.simulator import Simulator
+from distlab.snapshot import KVSnapshotStore
+from distlab.snapshot_transport import SnapshotTransport
+
+
+def test_lagging_follower_installs_snapshot_then_resumes_append_entries() -> None:
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    leader = cluster.node("n1")
+    leader.start_election()
+    sim.run()
+    assert leader.role is RaftRole.LEADER
+
+    commands = (
+        ClientRequest("client-a", 1, Put("k", "v1")),
+        ClientRequest("client-a", 1, Put("k", "v1")),
+        ClientRequest("client-b", 2, Put("other", "value")),
+        Put("k", "v2"),
+    )
+    for command in commands:
+        leader._persist_log((*leader.log, LogEntry(term=leader.current_term, command=command)))
+
+    initial = LeaderReplicator(leader)
+    assert initial.replicate("n2") is True
+    assert leader.commit_index == 4
+
+    kv = ReplicatedKV(cluster)
+    kv.apply_committed("n1")
+    store = KVSnapshotStore(cluster, kv)
+    snapshot = store.compact("n1")
+    follower = cluster.node("n3")
+    assert follower.last_log_index == 0
+    assert leader.log_base_index == snapshot.last_included_index == 4
+
+    transport = SnapshotTransport(store)
+    replicator = LeaderReplicator(leader, snapshot_transport=transport)
+    assert replicator.recover_peer("n3", max_attempts=3) is True
+
+    assert follower.log_base_index == 4
+    assert follower.log_base_term == snapshot.last_included_term
+    assert follower.commit_index == 4
+    assert kv.snapshot("n3") == {"k": "v2", "other": "value"}
+    assert kv.has_applied_request("n3", "client-a", 1)
+    assert replicator.progress("n3").match_index == 4
+    assert replicator.progress("n3").next_index == 5
+
+    snapshots = [record for record in sim.trace if record.kind == "raft-replication-snapshot"]
+    requests = [
+        record for record in sim.trace if record.kind == "raft-install-snapshot-request"
+    ]
+    responses = [
+        record for record in sim.trace if record.kind == "raft-install-snapshot-response"
+    ]
+    assert len(snapshots) == len(requests) == len(responses) == 1
+    assert snapshots[0].details["next_index"] == 4
+    assert responses[0].details["success"] is True
+    assert responses[0].details["last_included_index"] == 4
+
+    leader._persist_log(
+        (*leader.log, LogEntry(term=leader.current_term, command=Put("post", "v3")))
+    )
+    assert replicator.replicate("n3") is True
+    assert leader.commit_index == 5
+    assert replicator.replicate("n3") is True
+    assert follower.commit_index == 5
+
+    kv.apply_committed("n1")
+    kv.apply_committed("n3")
+    assert kv.snapshot("n1") == kv.snapshot("n3") == {
+        "k": "v2",
+        "other": "value",
+        "post": "v3",
+    }
+
+    cluster.assert_log_matching()
+    kv.applier.assert_state_machine_safety()
