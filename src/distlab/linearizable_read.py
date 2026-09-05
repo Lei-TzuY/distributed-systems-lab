@@ -88,7 +88,7 @@ class LinearizableKVReader:
 
     def _require_current_term_commit(self) -> None:
         commit_index = self.leader.commit_index
-        if commit_index == 0 or self.leader.log[commit_index - 1].term != self.leader.current_term:
+        if commit_index == 0 or self.leader.log_view.term_at(commit_index) != self.leader.current_term:
             raise CurrentTermCommitRequired(
                 "linearizable reads require a committed entry from the leader's current term"
             )
