@@ -242,6 +242,7 @@ class LeaderReplicator:
             peer,
             trace_start,
             kind="raft-install-snapshot-response",
+            requested_last_included_index=snapshot.last_included_index,
         )
         if response is None:
             raise ReplicationResponseMissing(
@@ -281,7 +282,14 @@ class LeaderReplicator:
             source=source,
         )
 
-    def _matching_response(self, peer: str, trace_start: int, *, kind: str):
+    def _matching_response(
+        self,
+        peer: str,
+        trace_start: int,
+        *,
+        kind: str,
+        requested_last_included_index: int | None = None,
+    ):
         for record in reversed(self.sim.trace[trace_start:]):
             if record.kind != kind:
                 continue
@@ -290,6 +298,12 @@ class LeaderReplicator:
             if record.details.get("follower") != peer:
                 continue
             if int(record.details.get("term", -1)) != self._term:
+                continue
+            if (
+                requested_last_included_index is not None
+                and int(record.details.get("requested_last_included_index", -1))
+                != requested_last_included_index
+            ):
                 continue
             return record
         return None
