@@ -38,11 +38,10 @@ class KVSnapshot:
 class KVSnapshotStore:
     """Create, validate, and compact durable KV snapshots.
 
-    The checkpoint includes client deduplication identities because restoring only
-    the user-visible map would allow a retried request to execute twice after a
-    future InstallSnapshot path. Snapshot-driven compaction advances the durable
-    Raft log boundary while the full applied history remains authoritative until
-    state-machine history compaction is implemented separately.
+    Snapshot compaction advances both the durable Raft log boundary and the
+    durable state-machine boundary. KV state plus client deduplication identities
+    therefore become the source of truth for the discarded applied prefix, while
+    later applied entries remain explicit and replayable.
     """
 
     _PERSISTENT_KEY = "kv_snapshot"
@@ -80,7 +79,7 @@ class KVSnapshotStore:
             last_included_index=last_applied,
             last_included_term=node.log_view.term_at(last_applied),
             state=tuple(sorted(self.kv.snapshot(node_id).items())),
-            client_requests=self._client_requests(node_id, last_applied),
+            client_requests=self._client_requests(node_id),
         )
         previous = self.latest(node_id)
         if previous is not None and previous.last_included_index > last_applied:
@@ -97,7 +96,7 @@ class KVSnapshotStore:
         return snapshot
 
     def compact(self, node_id: str) -> KVSnapshot:
-        """Persist a checkpoint and discard its covered retained Raft prefix."""
+        """Persist a checkpoint and discard its covered Raft/applied prefixes."""
         snapshot = self.create(node_id)
         node = self.cluster.node(node_id)
         previous_base_index = node.log_base_index
@@ -110,6 +109,11 @@ class KVSnapshotStore:
         persistent["log"] = compacted.entries
         persistent["log_base_index"] = compacted.base_index
         persistent["log_base_term"] = compacted.base_term
+        self.kv.applier.compact_through(
+            node_id,
+            snapshot.last_included_index,
+            snapshot.last_included_term,
+        )
         self.sim._record(
             "raft-log-compact",
             node=node_id,
@@ -121,28 +125,27 @@ class KVSnapshotStore:
         )
         return snapshot
 
-    def _client_requests(
-        self, node_id: str, last_included_index: int
-    ) -> tuple[SnapshotClientRequest, ...]:
-        requests: dict[tuple[str, int], SnapshotClientRequest] = {}
-        entries = self.kv.applier.applied_entries(node_id)[:last_included_index]
-        for entry in entries:
-            command = entry.command
-            if not isinstance(command, ClientRequest):
-                continue
-            identity = (command.client_id, command.request_id)
-            item = SnapshotClientRequest(
-                client_id=command.client_id,
-                request_id=command.request_id,
-                operation=command.operation,
+    def _client_requests(self, node_id: str) -> tuple[SnapshotClientRequest, ...]:
+        requests = self.kv.client_requests(node_id)
+        return tuple(
+            SnapshotClientRequest(
+                client_id=client_id,
+                request_id=request_id,
+                operation=requests[(client_id, request_id)],
             )
-            existing = requests.get(identity)
-            if existing is not None and existing != item:
-                raise AssertionError("conflicting client identity in applied snapshot prefix")
-            requests[identity] = item
-        return tuple(requests[key] for key in sorted(requests))
+            for client_id, request_id in sorted(requests)
+        )
 
     def _validate_against_applied_history(self, node_id: str, snapshot: KVSnapshot) -> None:
+        base_index = self.kv.applier.applied_base_index(node_id)
+        base_term = self.kv.applier.applied_base_term(node_id)
+        if base_index > 0:
+            if snapshot.last_included_index != base_index:
+                raise AssertionError("snapshot index diverges from compacted applied boundary")
+            if snapshot.last_included_term != base_term:
+                raise AssertionError("snapshot term diverges from compacted applied boundary")
+            return
+
         history = self.kv.applier.applied_entries(node_id)
         if snapshot.last_included_index > len(history):
             raise AssertionError("snapshot exceeds durable applied history")
