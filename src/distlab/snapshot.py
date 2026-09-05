@@ -36,12 +36,13 @@ class KVSnapshot:
 
 
 class KVSnapshotStore:
-    """Create and validate durable KV snapshots without compacting the Raft log yet.
+    """Create, validate, and compact durable KV snapshots.
 
     The checkpoint includes client deduplication identities because restoring only
     the user-visible map would allow a retried request to execute twice after a
-    future InstallSnapshot path. The full applied history remains authoritative
-    until log compaction is implemented in the next snapshot slice.
+    future InstallSnapshot path. Snapshot-driven compaction advances the durable
+    Raft log boundary while the full applied history remains authoritative until
+    state-machine history compaction is implemented separately.
     """
 
     _PERSISTENT_KEY = "kv_snapshot"
@@ -92,6 +93,31 @@ class KVSnapshotStore:
             last_included_term=snapshot.last_included_term,
             key_count=len(snapshot.state),
             client_request_count=len(snapshot.client_requests),
+        )
+        return snapshot
+
+    def compact(self, node_id: str) -> KVSnapshot:
+        """Persist a checkpoint and discard its covered retained Raft prefix."""
+        snapshot = self.create(node_id)
+        node = self.cluster.node(node_id)
+        previous_base_index = node.log_base_index
+        previous_retained_count = len(node.log)
+        compacted = node.log_view.compact_through(snapshot.last_included_index)
+        if compacted.base_term != snapshot.last_included_term:
+            raise AssertionError("snapshot term diverges from compacted Raft boundary")
+
+        persistent = self.sim.persistent_state[node_id]
+        persistent["log"] = compacted.entries
+        persistent["log_base_index"] = compacted.base_index
+        persistent["log_base_term"] = compacted.base_term
+        self.sim._record(
+            "raft-log-compact",
+            node=node_id,
+            previous_base_index=previous_base_index,
+            log_base_index=compacted.base_index,
+            log_base_term=compacted.base_term,
+            previous_retained_count=previous_retained_count,
+            retained_count=len(compacted.entries),
         )
         return snapshot
 
