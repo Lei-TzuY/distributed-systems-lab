@@ -76,6 +76,13 @@ def test_snapshot_creation_uses_absolute_index_after_durable_compaction() -> Non
     assert snapshot.last_included_index == 4
     assert snapshot.last_included_term == leader.log_view.term_at(4) == 1
     assert snapshot.state == (("k", "v1"),)
+
+    leader._persist_log((*leader.log, LogEntry(term=leader.current_term, command=Put("post", "v2"))))
+    leader.advance_commit_index(5, source="test-post-compaction")
+    applied = kv.apply_committed("n1")
+    assert tuple(record.index for record in applied) == (5,)
+    assert kv.snapshot("n1") == {"k": "v1", "post": "v2"}
+
     cluster.assert_log_matching()
     kv.applier.assert_state_machine_safety()
 
