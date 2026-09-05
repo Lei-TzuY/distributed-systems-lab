@@ -78,6 +78,7 @@ class LeaderReplicator:
 
             prev_log_index = next_index - 1
             entries = log.suffix_from(next_index)
+            expected_match_index = prev_log_index + len(entries)
             trace_start = len(self.sim.trace)
 
             self.sim._record(
@@ -88,6 +89,7 @@ class LeaderReplicator:
                 next_index=next_index,
                 prev_log_index=prev_log_index,
                 entry_count=len(entries),
+                expected_match_index=expected_match_index,
                 leader_commit=self._commit_index,
                 attempt=attempts,
             )
@@ -99,7 +101,12 @@ class LeaderReplicator:
             )
             self.sim.run()
 
-            response = self._matching_response(peer, trace_start, kind="raft-append-response")
+            response = self._matching_response(
+                peer,
+                trace_start,
+                kind="raft-append-response",
+                expected_match_index=expected_match_index,
+            )
             if response is None:
                 raise ReplicationResponseMissing(
                     f"no AppendEntries response from {peer!r} for leader "
@@ -296,6 +303,7 @@ class LeaderReplicator:
         kind: str,
         requested_last_included_index: int | None = None,
         request_id: int | None = None,
+        expected_match_index: int | None = None,
     ):
         for record in reversed(self.sim.trace[trace_start:]):
             if record.kind != kind:
@@ -313,6 +321,12 @@ class LeaderReplicator:
             ):
                 continue
             if request_id is not None and int(record.details.get("request_id", -1)) != request_id:
+                continue
+            if (
+                expected_match_index is not None
+                and bool(record.details.get("success"))
+                and int(record.details.get("match_index", -1)) != expected_match_index
+            ):
                 continue
             return record
         return None
