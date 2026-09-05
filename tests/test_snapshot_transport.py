@@ -232,3 +232,57 @@ def test_snapshot_response_with_higher_term_stops_stale_replicator() -> None:
     safety.election_safety.assert_cluster(cluster)
     cluster.assert_log_matching()
     kv.applier.assert_state_machine_safety()
+
+
+def test_current_term_install_snapshot_demotes_candidate_and_resets_timeout() -> None:
+    sim = Simulator()
+    cluster = RaftCluster(
+        sim,
+        ("n1", "n2", "n3"),
+        election_timeouts={"n1": 100, "n2": 110, "n3": 120},
+    )
+    leader = cluster.node("n1")
+    leader.start_election()
+    sim.run(max_events=4)
+    assert leader.role is RaftRole.LEADER
+
+    leader._persist_log((LogEntry(term=leader.current_term, command=Put("k", "v1")),))
+    initial = LeaderReplicator(leader)
+    assert initial.replicate("n2") is True
+    kv = ReplicatedKV(cluster)
+    kv.apply_committed("n1")
+    store = KVSnapshotStore(cluster, kv)
+    snapshot = store.compact("n1")
+    transport = SnapshotTransport(store)
+    follower = cluster.node("n3")
+
+    sim.persistent_state["n3"]["current_term"] = leader.current_term
+    sim.persistent_state["n3"]["voted_for"] = "n3"
+    sim.volatile_state["n3"]["role"] = RaftRole.CANDIDATE.value
+    sim.volatile_state["n3"]["votes_received"] = {"n3"}
+    trace_start = len(sim.trace)
+
+    transport.send_install_snapshot(
+        leader_id="n1",
+        follower_id="n3",
+        term=leader.current_term,
+        snapshot=snapshot,
+    )
+    assert sim.run(max_events=1) == 1
+
+    assert follower.role is RaftRole.FOLLOWER
+    assert follower.votes_received == frozenset()
+    assert follower.current_term == leader.current_term
+    assert follower.log_base_index == snapshot.last_included_index == 1
+    assert kv.snapshot("n3") == {"k": "v1"}
+    timeout_resets = [
+        record
+        for record in sim.trace[trace_start:]
+        if record.kind == "raft-election-timeout-reset"
+        and record.details["node"] == "n3"
+        and record.details["reason"] == "install-snapshot"
+    ]
+    assert len(timeout_resets) == 1
+
+    cluster.assert_log_matching()
+    kv.applier.assert_state_machine_safety()
