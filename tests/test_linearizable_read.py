@@ -11,6 +11,7 @@ from distlab.linearizable_read import (
 from distlab.raft import LogEntry, RaftCluster, RaftRole
 from distlab.replication import LeaderReplicator
 from distlab.simulator import Simulator
+from distlab.snapshot import KVSnapshotStore
 
 
 def _elect_leader_with_old_value() -> tuple[
@@ -61,6 +62,26 @@ def test_linearizable_read_confirms_quorum_then_applies_committed_prefix() -> No
     assert records[0].details["commit_index"] == 2
     assert records[0].details["majority"] == 2
     assert records[0].details["acknowledged_peers"] == ("n2",)
+    cluster.assert_log_matching()
+    kv.applier.assert_state_machine_safety()
+
+
+def test_linearizable_read_survives_compaction_through_current_term_commit() -> None:
+    _, cluster, replicator, kv = _elect_leader_with_old_value()
+    _commit_current_term_barrier(replicator)
+    kv.apply_committed("n1")
+
+    snapshot = KVSnapshotStore(cluster, kv).compact("n1")
+    leader = replicator.leader
+    assert snapshot.last_included_index == 2
+    assert snapshot.last_included_term == 3
+    assert leader.log_base_index == 2
+    assert leader.log == ()
+    assert leader.commit_index == 2
+
+    reader = LinearizableKVReader(kv, replicator)
+    assert reader.get("k") == "v1"
+    assert leader.log_view.term_at(leader.commit_index) == leader.current_term
     cluster.assert_log_matching()
     kv.applier.assert_state_machine_safety()
 
