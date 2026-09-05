@@ -58,13 +58,12 @@ class ClientRequestConflict(AssertionError):
 
 
 class ReplicatedKV:
-    """Deterministic key/value state derived from each node's applied Raft prefix.
+    """Deterministic key/value state derived from durable Raft application state.
 
-    KV state and client deduplication state are intentionally rebuildable rather
-    than independently persisted. The durable source of truth is the applied
-    Raft history owned by ``StateMachineApplier``. Reconstructing this object
-    after crash/restart replays that durable prefix, restoring both the KV map
-    and the set of client request identities that have already taken effect.
+    Before snapshot compaction the durable applied history is replayed from index
+    one. After compaction, the durable KV snapshot seeds user-visible state and
+    client deduplication identities, and only the retained applied suffix after
+    that snapshot boundary is replayed.
     """
 
     def __init__(self, cluster: RaftCluster, applier: StateMachineApplier | None = None) -> None:
@@ -79,6 +78,7 @@ class ReplicatedKV:
             node_id: {} for node_id in cluster.node_ids
         }
         for node_id in cluster.node_ids:
+            self._restore_snapshot_boundary(node_id)
             history = self.applier.applied_entries(node_id)
             self._validate_entries(history)
             self._validate_request_conflicts(node_id, history)
@@ -93,20 +93,17 @@ class ReplicatedKV:
         self._require_node(node_id)
         return dict(self._state[node_id])
 
+    def client_requests(self, node_id: str) -> dict[tuple[str, int], KVOperation]:
+        """Return the full deduplication state represented by the current KV image."""
+        self._require_node(node_id)
+        return dict(self._requests[node_id])
+
     def has_applied_request(self, node_id: str, client_id: str, request_id: int) -> bool:
         self._require_node(node_id)
         return (client_id, request_id) in self._requests[node_id]
 
     def apply_committed(self, node_id: str) -> tuple[AppliedEntry, ...]:
-        """Apply newly committed KV commands in Raft log order exactly once.
-
-        Duplicate ``ClientRequest`` entries with the same identity and operation
-        advance Raft/state-machine progress but do not execute the operation a
-        second time. Reusing an identity for a different operation is rejected
-        before durable applied progress advances. Internal commit-recovery
-        barriers advance applied progress as deterministic no-ops.
-        """
-
+        """Apply newly committed KV commands in Raft log order exactly once."""
         self._require_node(node_id)
         node = self.cluster.node(node_id)
         start = self.applier.last_applied(node_id) + 1
@@ -124,13 +121,17 @@ class ReplicatedKV:
         return applied
 
     def assert_replica_consistency(self) -> None:
-        """Equal applied prefixes must produce identical deterministic KV/dedup state."""
-
+        """Equal durable snapshot/suffix prefixes must yield identical KV/dedup state."""
         by_prefix: dict[
-            tuple[LogEntry, ...], tuple[str, dict[str, str], dict[tuple[str, int], KVOperation]]
+            tuple[int, int, tuple[LogEntry, ...]],
+            tuple[str, dict[str, str], dict[tuple[str, int], KVOperation]],
         ] = {}
         for node_id in self.cluster.node_ids:
-            prefix = self.applier.applied_entries(node_id)
+            prefix = (
+                self.applier.applied_base_index(node_id),
+                self.applier.applied_base_term(node_id),
+                self.applier.applied_entries(node_id),
+            )
             current = self.snapshot(node_id)
             requests = dict(self._requests[node_id])
             existing = by_prefix.get(prefix)
@@ -142,6 +143,38 @@ class ReplicatedKV:
                     f"{node_id!r}=({current!r}, {requests!r})"
                 )
             by_prefix.setdefault(prefix, (node_id, current, requests))
+
+    def _restore_snapshot_boundary(self, node_id: str) -> None:
+        base_index = self.applier.applied_base_index(node_id)
+        if base_index == 0:
+            return
+
+        from .snapshot import KVSnapshot
+
+        value = self.sim.persistent_state[node_id].get("kv_snapshot")
+        if not isinstance(value, KVSnapshot):
+            raise AssertionError(
+                f"compacted state-machine history for {node_id!r} requires a durable KV snapshot"
+            )
+        if value.last_included_index != base_index:
+            raise AssertionError(
+                f"KV snapshot index for {node_id!r} diverges from state-machine boundary"
+            )
+        if value.last_included_term != self.applier.applied_base_term(node_id):
+            raise AssertionError(
+                f"KV snapshot term for {node_id!r} diverges from state-machine boundary"
+            )
+
+        self._state[node_id] = dict(value.state)
+        for item in value.client_requests:
+            identity = (item.client_id, item.request_id)
+            previous = self._requests[node_id].get(identity)
+            if previous is not None and previous != item.operation:
+                raise ClientRequestConflict(
+                    "snapshot contains conflicting client request identity: "
+                    f"client={item.client_id!r}, request_id={item.request_id}"
+                )
+            self._requests[node_id][identity] = item.operation
 
     def _apply_command(
         self,
@@ -187,7 +220,7 @@ class ReplicatedKV:
                 operation_name = "commit-recovery-barrier"
                 key = None
                 value = None
-            else:  # validation should make this unreachable
+            else:
                 raise InvalidKVCommand(f"unsupported KV command {operation!r}")
             self.sim._record(
                 "kv-apply",
