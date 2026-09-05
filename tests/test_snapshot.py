@@ -148,6 +148,68 @@ def test_snapshot_compaction_discards_log_and_applied_prefix_and_survives_restar
     recovered_kv.applier.assert_state_machine_safety()
 
 
+def test_snapshot_install_advances_lagging_follower_durable_state() -> None:
+    sim, cluster, kv = _committed_kv()
+    store = KVSnapshotStore(cluster, kv)
+    snapshot = store.compact("n1")
+    follower = cluster.node("n3")
+
+    assert follower.last_log_index == 0
+    assert kv.applier.last_applied("n3") == 0
+
+    store.install("n3", snapshot)
+
+    assert store.latest("n3") == snapshot
+    assert follower.log_base_index == snapshot.last_included_index == 4
+    assert follower.log_base_term == snapshot.last_included_term == 1
+    assert follower.log == ()
+    assert follower.last_log_index == 4
+    assert follower.commit_index == 4
+    assert kv.applier.applied_base_index("n3") == 4
+    assert kv.applier.applied_base_term("n3") == 1
+    assert kv.applier.last_applied("n3") == 4
+    assert kv.applier.applied_entries("n3") == ()
+    assert kv.snapshot("n3") == {"k": "v1"}
+    assert kv.has_applied_request("n3", "client-a", 1)
+
+    installs = [record for record in sim.trace if record.kind == "raft-kv-snapshot-install"]
+    assert len(installs) == 1
+    assert installs[0].details["node"] == "n3"
+    assert installs[0].details["previous_last_log_index"] == 0
+    assert installs[0].details["last_included_index"] == 4
+
+    sim.crash("n3")
+    sim.restart("n3")
+    recovered_kv = ReplicatedKV(cluster)
+    recovered_store = KVSnapshotStore(cluster, recovered_kv)
+
+    assert recovered_store.latest("n3") == snapshot
+    assert follower.log_base_index == 4
+    assert follower.last_log_index == 4
+    assert recovered_kv.applier.applied_base_index("n3") == 4
+    assert recovered_kv.applier.last_applied("n3") == 4
+    assert recovered_kv.snapshot("n3") == {"k": "v1"}
+    assert recovered_kv.has_applied_request("n3", "client-a", 1)
+    cluster.assert_log_matching()
+    recovered_kv.applier.assert_state_machine_safety()
+
+
+def test_snapshot_install_rejects_discarding_newer_retained_suffix() -> None:
+    _, cluster, kv = _committed_kv()
+    store = KVSnapshotStore(cluster, kv)
+    snapshot = store.compact("n1")
+    follower = cluster.node("n2")
+    follower._persist_log(
+        (*follower.log, LogEntry(term=1, command=Put("later", "value")))
+    )
+
+    with pytest.raises(ValueError, match="retained suffix"):
+        store.install("n2", snapshot)
+
+    assert follower.last_log_index == 5
+    assert store.latest("n2") is None
+
+
 def test_snapshot_rejects_empty_state_machine() -> None:
     sim = Simulator()
     cluster = RaftCluster(sim, ("n1",))
