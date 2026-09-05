@@ -36,7 +36,7 @@ class KVSnapshot:
 
 
 class KVSnapshotStore:
-    """Create, validate, and compact durable KV snapshots.
+    """Create, validate, compact, and install durable KV snapshots.
 
     Snapshot compaction advances both the durable Raft log boundary and the
     durable state-machine boundary. KV state plus client deduplication identities
@@ -124,6 +124,73 @@ class KVSnapshotStore:
             retained_count=len(compacted.entries),
         )
         return snapshot
+
+    def install(self, node_id: str, snapshot: KVSnapshot) -> None:
+        """Install a newer durable snapshot into a follower behind its boundary.
+
+        This receiver-side primitive intentionally handles the lagging-follower
+        case where the local log does not extend past the incoming snapshot. A
+        future transport slice can invoke it from InstallSnapshot RPC delivery;
+        preserving a matching suffix beyond the snapshot boundary remains a
+        separate optimization and is rejected here rather than silently losing it.
+        """
+        self._require_node(node_id)
+        if not isinstance(snapshot, KVSnapshot):
+            raise TypeError("installed snapshot must be a KVSnapshot")
+
+        node = self.cluster.node(node_id)
+        previous = self.latest(node_id)
+        if previous is not None:
+            if previous.last_included_index > snapshot.last_included_index:
+                raise ValueError("installed snapshot cannot move backwards")
+            if previous.last_included_index == snapshot.last_included_index:
+                if previous != snapshot:
+                    raise AssertionError("snapshot contents diverge at existing boundary")
+                return
+        if snapshot.last_included_index < node.log_base_index:
+            raise ValueError("installed snapshot cannot precede the local Raft boundary")
+        if node.last_log_index > snapshot.last_included_index:
+            raise ValueError("snapshot install cannot discard a retained suffix beyond its boundary")
+
+        persistent = self.sim.persistent_state[node_id]
+        previous_log_base_index = node.log_base_index
+        previous_last_log_index = node.last_log_index
+        previous_applied_index = self.kv.applier.last_applied(node_id)
+
+        persistent[self._PERSISTENT_KEY] = snapshot
+        persistent["log"] = ()
+        persistent["log_base_index"] = snapshot.last_included_index
+        persistent["log_base_term"] = snapshot.last_included_term
+        persistent["state_machine_applied"] = ()
+        persistent["state_machine_base_index"] = snapshot.last_included_index
+        persistent["state_machine_base_term"] = snapshot.last_included_term
+
+        applier = self.kv.applier
+        applier._base_index[node_id] = snapshot.last_included_index
+        applier._base_term[node_id] = snapshot.last_included_term
+        applier._applied[node_id] = []
+        applier._last_applied[node_id] = snapshot.last_included_index
+
+        self.kv._state[node_id] = dict(snapshot.state)
+        self.kv._requests[node_id] = {
+            (item.client_id, item.request_id): item.operation for item in snapshot.client_requests
+        }
+        if node.commit_index < snapshot.last_included_index:
+            node.advance_commit_index(snapshot.last_included_index, source="install-snapshot")
+
+        self.sim._record(
+            "raft-kv-snapshot-install",
+            node=node_id,
+            previous_log_base_index=previous_log_base_index,
+            previous_last_log_index=previous_last_log_index,
+            previous_applied_index=previous_applied_index,
+            last_included_index=snapshot.last_included_index,
+            last_included_term=snapshot.last_included_term,
+            key_count=len(snapshot.state),
+            client_request_count=len(snapshot.client_requests),
+        )
+        self.cluster.assert_log_matching()
+        applier.assert_state_machine_safety()
 
     def _client_requests(self, node_id: str) -> tuple[SnapshotClientRequest, ...]:
         requests = self.kv.client_requests(node_id)
