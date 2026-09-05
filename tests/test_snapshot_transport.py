@@ -236,14 +236,10 @@ def test_snapshot_response_with_higher_term_stops_stale_replicator() -> None:
 
 def test_current_term_install_snapshot_demotes_candidate_and_resets_timeout() -> None:
     sim = Simulator()
-    cluster = RaftCluster(
-        sim,
-        ("n1", "n2", "n3"),
-        election_timeouts={"n1": 100, "n2": 110, "n3": 120},
-    )
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
     leader = cluster.node("n1")
     leader.start_election()
-    sim.run(max_events=4)
+    sim.run()
     assert leader.role is RaftRole.LEADER
 
     leader._persist_log((LogEntry(term=leader.current_term, command=Put("k", "v1")),))
@@ -256,6 +252,7 @@ def test_current_term_install_snapshot_demotes_candidate_and_resets_timeout() ->
     transport = SnapshotTransport(store)
     follower = cluster.node("n3")
 
+    follower._election_timeout = 120
     sim.persistent_state["n3"]["current_term"] = leader.current_term
     sim.persistent_state["n3"]["voted_for"] = "n3"
     sim.volatile_state["n3"]["role"] = RaftRole.CANDIDATE.value
