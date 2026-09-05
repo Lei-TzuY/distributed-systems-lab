@@ -134,7 +134,11 @@ class SnapshotTransport:
                     installed_index=installed_index,
                 )
             else:
-                self.store.install(request.follower_id, request.snapshot)
+                self.store.install(
+                    request.follower_id,
+                    request.snapshot,
+                    preserve_matching_suffix=True,
+                )
                 installed_index = request.snapshot.last_included_index
             success = True
 
