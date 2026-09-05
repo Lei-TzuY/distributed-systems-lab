@@ -235,6 +235,8 @@ class LeaderReplicator:
             snapshot=snapshot,
         )
         self.sim.run()
+        if self.leader.current_term != self._term:
+            raise ReplicationError("replicator term is stale")
 
         response = self._matching_response(
             peer,
