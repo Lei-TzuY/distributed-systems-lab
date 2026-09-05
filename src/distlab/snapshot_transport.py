@@ -38,11 +38,12 @@ class InstallSnapshotResponse:
 class SnapshotTransport:
     """Deterministic simulator transport for durable InstallSnapshot exchange.
 
-    Snapshot traffic uses dedicated per-node transport endpoints while retaining
-    the Raft node id in every request/response. Receiver delivery is coupled to
-    the existing durable KV snapshot installer, so a successful response means
-    the follower's Raft boundary, applied boundary, KV state, and dedup state are
-    durably installed.
+    Snapshot traffic uses dedicated per-node delivery handlers but shares the
+    logical Raft node-to-node link identity. Existing partition and explicit
+    drop/delay/duplicate schedules therefore apply to InstallSnapshot exactly as
+    they do to ordinary Raft traffic. Receiver delivery is coupled to the durable
+    KV snapshot installer, so a successful response means the follower's Raft
+    boundary, applied boundary, KV state, and dedup state are durably installed.
     """
 
     _PREFIX = "__raft_snapshot__"
@@ -77,14 +78,15 @@ class SnapshotTransport:
             last_included_term=snapshot.last_included_term,
         )
         self.sim.send(
-            self.endpoint(leader_id),
-            self.endpoint(follower_id),
+            leader_id,
+            follower_id,
             InstallSnapshotRequest(
                 term=term,
                 leader_id=leader_id,
                 follower_id=follower_id,
                 snapshot=snapshot,
             ),
+            delivery_dst=self.endpoint(follower_id),
         )
 
     def _handle_message(self, sim: Simulator, message: Message) -> None:
@@ -129,9 +131,10 @@ class SnapshotTransport:
             last_included_index=installed_index,
         )
         self.sim.send(
-            self.endpoint(request.follower_id),
-            self.endpoint(request.leader_id),
+            request.follower_id,
+            request.leader_id,
             response,
+            delivery_dst=self.endpoint(request.leader_id),
         )
 
     def _handle_response(self, response: InstallSnapshotResponse) -> None:

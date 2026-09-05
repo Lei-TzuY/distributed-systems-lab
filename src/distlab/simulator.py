@@ -54,6 +54,7 @@ class Message:
     dst: str
     payload: Any
     ordinal: int
+    delivery_dst: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,12 +153,35 @@ class Simulator:
             self._restart_handlers[node] = restart_handler
         self._alive[node] = True
 
-    def send(self, src: str, dst: str, payload: Any, *, delay: int = 1) -> None:
+    def send(
+        self,
+        src: str,
+        dst: str,
+        payload: Any,
+        *,
+        delay: int = 1,
+        delivery_dst: str | None = None,
+    ) -> None:
+        """Send over logical link ``src`` -> ``dst`` to an optional handler endpoint.
+
+        Fault rules, ordinals, partitions, crash checks, and trace identities stay
+        keyed by the logical link. ``delivery_dst`` only selects the registered
+        handler that receives a delivered message, allowing protocol subchannels
+        to share the same deterministic network semantics.
+        """
         if delay < 0:
             raise ValueError("delay must be non-negative")
+        if delivery_dst is not None and delivery_dst not in self._handlers:
+            raise ValueError(f"unknown delivery endpoint {delivery_dst!r}")
         key = (src, dst)
         self._send_ordinals[key] += 1
-        message = Message(src=src, dst=dst, payload=payload, ordinal=self._send_ordinals[key])
+        message = Message(
+            src=src,
+            dst=dst,
+            payload=payload,
+            ordinal=self._send_ordinals[key],
+            delivery_dst=delivery_dst,
+        )
         if key in self._blocked_links:
             self._record(
                 "send",
@@ -261,9 +285,10 @@ class Simulator:
                 delivered += 1
                 continue
 
-            handler = self._handlers.get(message.dst)
+            delivery_dst = message.delivery_dst or message.dst
+            handler = self._handlers.get(delivery_dst)
             if handler is None:
-                raise KeyError(f"no handler registered for node {message.dst!r}")
+                raise KeyError(f"no handler registered for node {delivery_dst!r}")
 
             self._record(
                 "deliver",
