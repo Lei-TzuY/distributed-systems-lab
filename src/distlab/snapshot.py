@@ -125,14 +125,19 @@ class KVSnapshotStore:
         )
         return snapshot
 
-    def install(self, node_id: str, snapshot: KVSnapshot) -> None:
-        """Install a newer durable snapshot and preserve a proven matching suffix.
+    def install(
+        self,
+        node_id: str,
+        snapshot: KVSnapshot,
+        *,
+        preserve_matching_suffix: bool = False,
+    ) -> None:
+        """Install a newer durable snapshot into a follower behind its boundary.
 
-        When the follower still retains the incoming snapshot boundary with the
-        same term, entries strictly after that boundary remain valid by Raft's
-        Log Matching property and are kept. A newer retained suffix whose boundary
-        does not match is rejected rather than discarded silently; resolving that
-        divergent case remains a separate protocol slice.
+        Protocol delivery may preserve entries strictly after the snapshot when
+        the follower still retains a matching index/term boundary. Direct callers
+        remain conservative by default so they cannot silently retain or discard
+        a suffix without opting into the Raft matching rule.
         """
         self._require_node(node_id)
         if not isinstance(snapshot, KVSnapshot):
@@ -152,6 +157,10 @@ class KVSnapshotStore:
 
         retained_suffix = ()
         if node.last_log_index > snapshot.last_included_index:
+            if not preserve_matching_suffix:
+                raise ValueError(
+                    "snapshot install cannot discard a retained suffix beyond its boundary"
+                )
             if not node.log_view.prefix_matches(
                 snapshot.last_included_index,
                 snapshot.last_included_term,
