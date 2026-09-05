@@ -1,6 +1,8 @@
+import pytest
+
 from distlab.kv import ClientRequest, Put, ReplicatedKV
 from distlab.raft import LogEntry, RaftCluster, RaftRole
-from distlab.replication import LeaderReplicator
+from distlab.replication import LeaderReplicator, ReplicationResponseMissing
 from distlab.simulator import Simulator
 from distlab.snapshot import KVSnapshotStore
 from distlab.snapshot_transport import SnapshotTransport
@@ -74,6 +76,49 @@ def test_lagging_follower_installs_snapshot_then_resumes_append_entries() -> Non
         "other": "value",
         "post": "v3",
     }
+
+    cluster.assert_log_matching()
+    kv.applier.assert_state_machine_safety()
+
+
+def test_snapshot_recovery_obeys_logical_partition_and_retries_after_heal() -> None:
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    leader = cluster.node("n1")
+    leader.start_election()
+    sim.run()
+    assert leader.role is RaftRole.LEADER
+
+    for index in range(1, 5):
+        leader._persist_log(
+            (*leader.log, LogEntry(term=leader.current_term, command=Put("k", f"v{index}")))
+        )
+
+    initial = LeaderReplicator(leader)
+    assert initial.replicate("n2") is True
+    kv = ReplicatedKV(cluster)
+    kv.apply_committed("n1")
+    store = KVSnapshotStore(cluster, kv)
+    snapshot = store.compact("n1")
+    transport = SnapshotTransport(store)
+    replicator = LeaderReplicator(leader, snapshot_transport=transport)
+    follower = cluster.node("n3")
+
+    sim.partition(("n1",), ("n3",))
+    with pytest.raises(ReplicationResponseMissing, match="no InstallSnapshot response"):
+        replicator.recover_peer("n3", max_attempts=1)
+
+    assert follower.log_base_index == 0
+    partition_drops = [record for record in sim.trace if record.kind == "partition-drop"]
+    assert partition_drops
+    assert partition_drops[-1].details["src"] == "n1"
+    assert partition_drops[-1].details["dst"] == "n3"
+
+    sim.heal_partition(("n1",), ("n3",))
+    assert replicator.recover_peer("n3", max_attempts=2) is True
+    assert follower.log_base_index == snapshot.last_included_index == 4
+    assert follower.log_base_term == snapshot.last_included_term
+    assert kv.snapshot("n3") == {"k": "v4"}
 
     cluster.assert_log_matching()
     kv.applier.assert_state_machine_safety()
