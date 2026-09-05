@@ -119,9 +119,24 @@ class SnapshotTransport:
         else:
             if request.term > follower.current_term:
                 follower._advance_term(request.term)
-            self.store.install(request.follower_id, request.snapshot)
+            latest = self.store.latest(request.follower_id)
+            if (
+                latest is not None
+                and latest.last_included_index > request.snapshot.last_included_index
+            ):
+                installed_index = latest.last_included_index
+                self.sim._record(
+                    "raft-install-snapshot-stale",
+                    leader=request.leader_id,
+                    follower=request.follower_id,
+                    term=request.term,
+                    incoming_index=request.snapshot.last_included_index,
+                    installed_index=installed_index,
+                )
+            else:
+                self.store.install(request.follower_id, request.snapshot)
+                installed_index = request.snapshot.last_included_index
             success = True
-            installed_index = request.snapshot.last_included_index
 
         response = InstallSnapshotResponse(
             term=follower.current_term,
