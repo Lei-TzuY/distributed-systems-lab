@@ -200,6 +200,7 @@ def test_snapshot_response_with_higher_term_stops_stale_replicator() -> None:
     )
     initial = LeaderReplicator(leader)
     assert initial.replicate("n2") is True
+    safety.checkpoint()
 
     kv = ReplicatedKV(cluster)
     kv.apply_committed("n1")
@@ -228,5 +229,6 @@ def test_snapshot_response_with_higher_term_stops_stale_replicator() -> None:
     assert responses[-1].details["success"] is False
     assert follower.log_base_index == 0
 
-    safety.checkpoint()
+    safety.election_safety.assert_cluster(cluster)
+    cluster.assert_log_matching()
     kv.applier.assert_state_machine_safety()
