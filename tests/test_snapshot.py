@@ -89,7 +89,7 @@ def test_snapshot_creation_uses_absolute_index_after_durable_compaction() -> Non
     kv.applier.assert_state_machine_safety()
 
 
-def test_snapshot_compaction_discards_covered_log_and_survives_restart() -> None:
+def test_snapshot_compaction_discards_log_and_applied_prefix_and_survives_restart() -> None:
     sim, cluster, kv = _committed_kv()
     leader = cluster.node("n1")
     store = KVSnapshotStore(cluster, kv)
@@ -102,6 +102,11 @@ def test_snapshot_compaction_discards_covered_log_and_survives_restart() -> None
     assert leader.log == ()
     assert leader.last_log_index == 4
     assert leader.last_log_term == 1
+    assert kv.applier.applied_base_index("n1") == 4
+    assert kv.applier.applied_base_term("n1") == 1
+    assert kv.applier.last_applied("n1") == 4
+    assert kv.applier.applied_entries("n1") == ()
+    assert sim.persistent_state["n1"]["state_machine_applied"] == ()
 
     compactions = [record for record in sim.trace if record.kind == "raft-log-compact"]
     assert len(compactions) == 1
@@ -109,6 +114,12 @@ def test_snapshot_compaction_discards_covered_log_and_survives_restart() -> None
     assert compactions[0].details["log_base_index"] == 4
     assert compactions[0].details["previous_retained_count"] == 4
     assert compactions[0].details["retained_count"] == 0
+    applied_compactions = [
+        record for record in sim.trace if record.kind == "raft-state-machine-compact"
+    ]
+    assert len(applied_compactions) == 1
+    assert applied_compactions[0].details["base_index"] == 4
+    assert applied_compactions[0].details["retained_count"] == 0
 
     sim.crash("n1")
     sim.restart("n1")
@@ -119,8 +130,20 @@ def test_snapshot_compaction_discards_covered_log_and_survives_restart() -> None
     assert leader.log_base_index == 4
     assert leader.log == ()
     assert leader.last_log_index == 4
+    assert recovered_kv.applier.applied_base_index("n1") == 4
+    assert recovered_kv.applier.last_applied("n1") == 4
+    assert recovered_kv.applier.applied_entries("n1") == ()
     assert recovered_kv.snapshot("n1") == {"k": "v1"}
     assert recovered_kv.has_applied_request("n1", "client-a", 1)
+
+    leader._persist_log(
+        (*leader.log, LogEntry(term=leader.current_term, command=Put("post", "v2")))
+    )
+    leader.advance_commit_index(5, source="test-snapshot-restart")
+    applied = recovered_kv.apply_committed("n1")
+    assert tuple(record.index for record in applied) == (5,)
+    assert recovered_kv.snapshot("n1") == {"k": "v1", "post": "v2"}
+
     cluster.assert_log_matching()
     recovered_kv.applier.assert_state_machine_safety()
 
