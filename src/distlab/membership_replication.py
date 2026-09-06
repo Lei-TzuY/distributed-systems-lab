@@ -39,6 +39,7 @@ class MembershipAwareLeaderReplicator(LeaderReplicator):
 
             self._commit_index = index
             self.leader.advance_commit_index(index, source=self.leader.node_id)
+            self._persist_committed_membership(index)
             self.sim._record(
                 "raft-commit-advance",
                 leader=self.leader.node_id,
@@ -56,3 +57,26 @@ class MembershipAwareLeaderReplicator(LeaderReplicator):
             break
 
         return self._commit_index
+
+    def _persist_committed_membership(self, commit_index: int) -> None:
+        """Durably record any membership command covered by this commit advance.
+
+        Commit advancement and live configuration activation are intentionally
+        separate operations. Persisting the watermark here closes the crash window
+        between objective quorum commit and the transition controller observing it.
+        """
+
+        from .membership_log import (
+            JointConsensusCommand,
+            StableConsensusCommand,
+            _persist_membership_commit_watermark,
+        )
+
+        cluster = self.leader.cluster
+        assert isinstance(cluster, ReconfigurableRaftCluster)
+        log = self.leader.log_view
+        for index in range(max(1, log.first_retained_index), commit_index + 1):
+            command = log.entry_at(index).command
+            if not isinstance(command, (JointConsensusCommand, StableConsensusCommand)):
+                continue
+            _persist_membership_commit_watermark(cluster, index=index, command=command)
