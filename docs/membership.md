@@ -13,6 +13,15 @@ Membership changes operate over pre-provisioned transport nodes. The initial sta
 3. `MembershipAwareLeaderReplicator` replicates and commits the entry using the current configuration;
 4. only after the exact proposal index is committed does the cluster activate joint old/new quorum semantics.
 
-A second proposal is rejected while one is pending, and a stale or replaced leader cannot activate its proposal. The transition records deterministic proposal and commit trace events so failures remain replayable.
+## Replicated joint-to-stable finalization
 
-This is intentionally not yet the complete membership-change protocol. Finalization into the new stable configuration is still an in-memory operation; a later slice must represent that final configuration as a replicated Raft entry and define restart/recovery of configuration state from durable history or snapshots.
+Finalization follows the same commit-before-activation rule:
+
+1. while joint consensus is active, the current leader appends `StableConsensusCommand` containing the exact new voter set;
+2. the cluster remains joint while the finalization entry is uncommitted, so election and commit decisions still require independent old/new majorities;
+3. the finalization entry itself must commit under that joint quorum;
+4. only after the exact finalization index commits does the cluster install the new stable voter set and fence removed voters.
+
+Only one membership command may be pending at a time. A stale or replaced leader cannot apply a pending command, and finalization is rejected unless the leader belongs to the new voter set. Proposal, commit, and finalization events are recorded in the deterministic trace.
+
+This is still intentionally short of full restart-safe dynamic membership. The committed commands are durable Raft history, but a restarted `ReconfigurableRaftCluster` does not yet reconstruct its active voting configuration by replaying committed membership entries or a membership-bearing snapshot. That recovery rule is a separate correctness slice.
