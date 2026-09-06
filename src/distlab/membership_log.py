@@ -91,7 +91,9 @@ def recover_voting_configuration(
             )
 
     if recovered is None or source is None:
-        raise MembershipChangeError("membership commit watermark has no recoverable durable replica")
+        raise MembershipChangeError(
+            "membership commit watermark has no recoverable durable replica"
+        )
 
     cluster.sim._record(
         "raft-membership-recovered",
