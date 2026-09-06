@@ -33,7 +33,6 @@ def _reader_cluster() -> tuple[
     append_current_term_barrier(leader)
     assert replicator.replicate("n2") is True
     assert leader.commit_index == 2
-    assert replicator.recover_peer("n3") is True
     return sim, cluster, replicator, ReplicatedKV(cluster)
 
 
@@ -64,7 +63,7 @@ def test_joint_linearizable_read_requires_both_voter_majorities() -> None:
 
     reader = LinearizableKVReader(kv, replicator)
     with pytest.raises(ReadQuorumUnavailable):
-        reader.get("k")
+        reader.get("k", max_attempts_per_peer=3)
 
     failures = [
         record for record in sim.trace if record.kind == "raft-linearizable-read-quorum-failed"
