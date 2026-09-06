@@ -40,6 +40,8 @@ def _compact_leader(cluster: ReconfigurableRaftCluster) -> None:
     snapshot = KVSnapshotStore(cluster, kv).compact("n1")
     assert snapshot.last_included_index == cluster.node("n1").log_base_index
     assert snapshot.voting_configuration is not None
+    cluster.assert_log_matching()
+    kv.applier.assert_state_machine_safety()
 
 
 def test_recreation_recovers_joint_membership_from_compacted_snapshot() -> None:
@@ -58,7 +60,6 @@ def test_recreation_recovers_joint_membership_from_compacted_snapshot() -> None:
     assert snapshot.voting_configuration.old_voters == ("n1", "n2", "n3")
     assert snapshot.voting_configuration.new_voters == ("n1", "n4", "n5")
     assert cluster.node("n1").log_base_index == joint_index
-    harness.checkpoint()
 
     recovered_sim, recovered = _recreate(sim)
 
@@ -98,7 +99,7 @@ def test_compacted_stable_snapshot_ignores_uncommitted_later_membership() -> Non
     uncommitted_index = later.propose_joint(("n1", "n2", "n5"))
     assert uncommitted_index == final_index + 1
     assert leader.commit_index == final_index
-    harness.checkpoint()
+    cluster.assert_log_matching()
 
     recovered_sim, recovered = _recreate(sim)
 
