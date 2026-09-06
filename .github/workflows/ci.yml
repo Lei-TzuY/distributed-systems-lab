@@ -25,18 +25,6 @@ jobs:
       - name: Install
         run: python -m pip install -e ".[dev]"
       - name: Ruff
-        shell: bash
-        run: |
-          set +e
-          ruff check . > ruff.txt 2>&1
-          status=$?
-          cat ruff.txt
-          exit $status
-      - name: Upload Ruff diagnostic
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ruff-${{ matrix.os }}-${{ matrix.python-version }}
-          path: ruff.txt
+        run: ruff check .
       - name: Tests
         run: pytest
