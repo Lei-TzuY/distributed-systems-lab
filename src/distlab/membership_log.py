@@ -9,6 +9,7 @@ from .membership import (
 )
 from .membership_replication import MembershipAwareLeaderReplicator
 from .raft import LogEntry, RaftNode, RaftRole
+from .snapshot import KVSnapshot, SnapshotVotingConfiguration
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,13 +46,14 @@ def recover_voting_configuration(
     cluster: ReconfigurableRaftCluster,
     initial: VotingConfiguration,
 ) -> VotingConfiguration:
-    """Replay only durably committed membership commands after cluster recreation.
+    """Recover committed membership from retained log entries and snapshots.
 
     Raft's ordinary ``commit_index`` is volatile, so membership activation stores a
     durable per-replica watermark once the cluster has objectively committed the
-    corresponding entry. Recovery chooses the highest such watermark, replays the
-    membership commands from a replica that durably contains that prefix, and
-    rejects compacted or contradictory histories instead of guessing.
+    corresponding entry. A compacted replica must carry voting configuration in
+    its durable KV snapshot; recovery uses that configuration as the prefix state
+    and replays only retained committed membership commands after the boundary.
+    Contradictory or incomplete durable evidence fails closed.
     """
 
     watermarks = {
@@ -64,23 +66,39 @@ def recover_voting_configuration(
 
     recovered: VotingConfiguration | None = None
     source: str | None = None
+    node_ids = frozenset(cluster.node_ids)
     for node_id in sorted(cluster.node_ids):
         if watermarks[node_id] != committed_index:
             continue
         node = cluster.node(node_id)
         view = node.log_view
+        replay_base = initial
+        replay_start = 1
+        snapshot_membership_index: int | None = None
+
         if view.base_index > 0:
-            raise MembershipChangeError(
-                "cannot recover membership from compacted log without snapshot membership state"
+            snapshot = cluster.sim.persistent_state[node_id].get("kv_snapshot")
+            replay_base, snapshot_membership_index = _configuration_from_snapshot(
+                snapshot,
+                node_ids=node_ids,
+                log_base_index=view.base_index,
+                log_base_term=view.base_term,
+                source_watermark=watermarks[node_id],
             )
+            replay_start = view.base_index + 1
+
         if committed_index > view.last_index:
             raise MembershipChangeError(
                 f"membership commit watermark {committed_index} exceeds {node_id!r} log"
             )
+        entries = tuple(
+            view.entry_at(index)
+            for index in range(replay_start, committed_index + 1)
+        )
         candidate = _replay_membership_prefix(
-            initial,
-            node_ids=frozenset(cluster.node_ids),
-            entries=tuple(view.entry_at(index) for index in range(1, committed_index + 1)),
+            replay_base,
+            node_ids=node_ids,
+            entries=entries,
         )
         if recovered is None:
             recovered = candidate
@@ -89,6 +107,14 @@ def recover_voting_configuration(
             raise MembershipChangeError(
                 "durable replicas disagree on committed membership configuration"
             )
+
+        cluster.sim._record(
+            "raft-membership-recovery-source",
+            source=node_id,
+            committed_index=committed_index,
+            log_base_index=view.base_index,
+            snapshot_membership_index=snapshot_membership_index,
+        )
 
     if recovered is None or source is None:
         raise MembershipChangeError(
@@ -105,6 +131,52 @@ def recover_voting_configuration(
         ),
     )
     return recovered
+
+
+def _configuration_from_snapshot(
+    snapshot: object,
+    *,
+    node_ids: frozenset[str],
+    log_base_index: int,
+    log_base_term: int,
+    source_watermark: int,
+) -> tuple[VotingConfiguration, int]:
+    if not isinstance(snapshot, KVSnapshot):
+        raise MembershipChangeError(
+            "cannot recover membership from compacted log without durable KV snapshot"
+        )
+    if snapshot.last_included_index != log_base_index:
+        raise MembershipChangeError(
+            "membership snapshot boundary diverges from compacted Raft log"
+        )
+    if snapshot.last_included_term != log_base_term:
+        raise MembershipChangeError(
+            "membership snapshot term diverges from compacted Raft log"
+        )
+    membership = snapshot.voting_configuration
+    if not isinstance(membership, SnapshotVotingConfiguration):
+        raise MembershipChangeError(
+            "cannot recover membership from compacted log without snapshot membership state"
+        )
+    if membership.committed_index > log_base_index:
+        raise MembershipChangeError(
+            "snapshot membership commit index exceeds compacted Raft boundary"
+        )
+    if membership.committed_index > source_watermark:
+        raise MembershipChangeError(
+            "snapshot membership commit index exceeds durable membership watermark"
+        )
+
+    old_voters = frozenset(membership.old_voters)
+    new_voters = (
+        frozenset(membership.new_voters)
+        if membership.new_voters is not None
+        else None
+    )
+    represented = old_voters | (new_voters or frozenset())
+    if not represented <= node_ids:
+        raise MembershipChangeError("snapshot membership references unknown nodes")
+    return VotingConfiguration(old_voters, new_voters), membership.committed_index
 
 
 def _replay_membership_prefix(
