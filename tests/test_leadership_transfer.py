@@ -3,6 +3,7 @@ import pytest
 from distlab.leadership_transfer import (
     InvalidLeadershipTransferTarget,
     LeadershipTransfer,
+    LeadershipTransferIncomplete,
     LeadershipTransferTargetUnavailable,
 )
 from distlab.membership import ReconfigurableRaftCluster
@@ -125,4 +126,35 @@ def test_joint_transfer_allows_incoming_new_voter() -> None:
     assert result.new_leader_id == "n4"
     assert cluster.node("n4").role is RaftRole.LEADER
     assert "n4" in cluster.voting_configuration.new_voters
+    RaftSafetyHarness(cluster).checkpoint()
+
+
+def test_joint_transfer_catchup_cannot_commit_with_only_new_side_quorum() -> None:
+    sim = Simulator()
+    cluster = ReconfigurableRaftCluster(
+        sim,
+        ("n1", "n2", "n3"),
+        voters=("n1", "n2"),
+    )
+    leader = cluster.node("n1")
+    leader.start_election()
+    sim.run()
+    assert leader.role is RaftRole.LEADER
+    cluster.begin_joint_consensus("n1", ("n1", "n3"))
+
+    entry = LogEntry(term=leader.current_term, command="uncommitted-before-transfer")
+    sim.persistent_state["n1"]["log"] = (*leader.log, entry)
+    sim.crash("n2")
+    RaftSafetyHarness(cluster).checkpoint()
+
+    with pytest.raises(LeadershipTransferIncomplete, match="did not win"):
+        LeadershipTransfer(leader).transfer("n3", max_replication_attempts=2)
+
+    assert cluster.node("n3").log == leader.log
+    assert leader.commit_index == 0
+    assert cluster.node("n3").commit_index == 0
+    assert not any(
+        record.kind == "raft-commit-advance" and record.details["commit_index"] == 1
+        for record in sim.trace
+    )
     RaftSafetyHarness(cluster).checkpoint()
