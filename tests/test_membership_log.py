@@ -5,12 +5,12 @@ from distlab.membership import (
     NonVoterElectionError,
     ReconfigurableRaftCluster,
 )
+from distlab.membership_replication import MembershipAwareLeaderReplicator
 from distlab.membership_log import (
     JointConsensusCommand,
     ReplicatedMembershipTransition,
     StableConsensusCommand,
 )
-from distlab.membership_replication import MembershipAwareLeaderReplicator
 from distlab.raft import RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
