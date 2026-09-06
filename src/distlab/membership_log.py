@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .membership import MembershipChangeError, ReconfigurableRaftCluster
+from .membership import (
+    MembershipChangeError,
+    ReconfigurableRaftCluster,
+    VotingConfiguration,
+)
 from .membership_replication import MembershipAwareLeaderReplicator
 from .raft import LogEntry, RaftNode, RaftRole
 
@@ -34,6 +38,123 @@ class StableConsensusCommand:
 
 
 MembershipCommand = JointConsensusCommand | StableConsensusCommand
+_MEMBERSHIP_COMMIT_INDEX = "membership_commit_index"
+
+
+def recover_voting_configuration(
+    cluster: ReconfigurableRaftCluster,
+    initial: VotingConfiguration,
+) -> VotingConfiguration:
+    """Replay only durably committed membership commands after cluster recreation.
+
+    Raft's ordinary ``commit_index`` is volatile, so membership activation stores a
+    durable per-replica watermark once the cluster has objectively committed the
+    corresponding entry. Recovery chooses the highest such watermark, replays the
+    membership commands from a replica that durably contains that prefix, and
+    rejects compacted or contradictory histories instead of guessing.
+    """
+
+    watermarks = {
+        node_id: int(cluster.sim.persistent_state[node_id].get(_MEMBERSHIP_COMMIT_INDEX, 0))
+        for node_id in cluster.node_ids
+    }
+    committed_index = max(watermarks.values(), default=0)
+    if committed_index == 0:
+        return initial
+
+    recovered: VotingConfiguration | None = None
+    source: str | None = None
+    for node_id in sorted(cluster.node_ids):
+        if watermarks[node_id] != committed_index:
+            continue
+        node = cluster.node(node_id)
+        view = node.log_view
+        if view.base_index > 0:
+            raise MembershipChangeError(
+                "cannot recover membership from compacted log without snapshot membership state"
+            )
+        if committed_index > view.last_index:
+            raise MembershipChangeError(
+                f"membership commit watermark {committed_index} exceeds {node_id!r} log"
+            )
+        candidate = _replay_membership_prefix(
+            initial,
+            node_ids=frozenset(cluster.node_ids),
+            entries=tuple(view.entry_at(index) for index in range(1, committed_index + 1)),
+        )
+        if recovered is None:
+            recovered = candidate
+            source = node_id
+        elif candidate != recovered:
+            raise MembershipChangeError(
+                "durable replicas disagree on committed membership configuration"
+            )
+
+    if recovered is None or source is None:
+        raise MembershipChangeError("membership commit watermark has no recoverable durable replica")
+
+    cluster.sim._record(
+        "raft-membership-recovered",
+        source=source,
+        committed_index=committed_index,
+        old_voters=tuple(sorted(recovered.old_voters)),
+        new_voters=(
+            tuple(sorted(recovered.new_voters)) if recovered.new_voters is not None else None
+        ),
+    )
+    return recovered
+
+
+def _replay_membership_prefix(
+    initial: VotingConfiguration,
+    *,
+    node_ids: frozenset[str],
+    entries: tuple[LogEntry, ...],
+) -> VotingConfiguration:
+    configuration = initial
+    for entry in entries:
+        command = entry.command
+        if isinstance(command, JointConsensusCommand):
+            if configuration.is_joint:
+                raise MembershipChangeError(
+                    "committed membership history starts a second joint configuration"
+                )
+            new_voters = frozenset(command.new_voters)
+            if not new_voters <= node_ids:
+                raise MembershipChangeError("committed membership history references unknown nodes")
+            configuration = VotingConfiguration(configuration.old_voters, new_voters)
+        elif isinstance(command, StableConsensusCommand):
+            if configuration.new_voters is None:
+                raise MembershipChangeError(
+                    "committed membership history finalizes without active joint consensus"
+                )
+            voters = frozenset(command.voters)
+            if voters != configuration.new_voters:
+                raise MembershipChangeError(
+                    "committed finalization does not match active joint new-voter set"
+                )
+            configuration = VotingConfiguration(voters)
+    return configuration
+
+
+def _persist_membership_commit_watermark(
+    cluster: ReconfigurableRaftCluster,
+    *,
+    index: int,
+    command: MembershipCommand,
+) -> None:
+    """Persist the cluster-level committed membership index on replicas holding it."""
+
+    for node_id in cluster.node_ids:
+        node = cluster.node(node_id)
+        if index < node.log_view.first_retained_index or index > node.log_view.last_index:
+            continue
+        if node.log_view.entry_at(index).command != command:
+            continue
+        state = cluster.sim.persistent_state[node_id]
+        previous = int(state.get(_MEMBERSHIP_COMMIT_INDEX, 0))
+        if index > previous:
+            state[_MEMBERSHIP_COMMIT_INDEX] = index
 
 
 class ReplicatedMembershipTransition:
@@ -42,8 +163,8 @@ class ReplicatedMembershipTransition:
     Both configuration changes are appended as ordinary durable current-term log
     entries. Stable-to-joint activation waits for the proposal to commit under the
     old stable quorum. Joint-to-stable finalization waits for its entry to commit
-    under the active joint quorum. Crash/restart reconstruction from committed
-    membership history remains a later slice.
+    under the active joint quorum. Committed membership watermarks make those
+    decisions reconstructible after crash/restart or cluster recreation.
     """
 
     def __init__(self, leader: RaftNode) -> None:
@@ -95,6 +216,7 @@ class ReplicatedMembershipTransition:
         if not isinstance(command, JointConsensusCommand):
             raise MembershipChangeError("pending membership command is not a joint proposal")
 
+        _persist_membership_commit_watermark(self.cluster, index=index, command=command)
         self.cluster.begin_joint_consensus(self.leader.node_id, command.new_voters)
         self.sim._record(
             "raft-membership-committed",
@@ -116,6 +238,7 @@ class ReplicatedMembershipTransition:
         configuration = self.cluster.voting_configuration
         if configuration.new_voters != frozenset(command.voters):
             raise MembershipChangeError("active joint configuration changed before finalization")
+        _persist_membership_commit_watermark(self.cluster, index=index, command=command)
         self.cluster.finalize_membership(self.leader.node_id)
         self.sim._record(
             "raft-membership-finalized",
