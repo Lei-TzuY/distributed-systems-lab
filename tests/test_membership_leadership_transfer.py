@@ -51,7 +51,7 @@ def test_transfer_rejects_learner_before_catch_up_or_term_mutation() -> None:
 
 
 def test_transfer_to_active_voter_preserves_membership_safety() -> None:
-    sim, cluster = _cluster_with_learner()
+    _, cluster = _cluster_with_learner()
     harness = RaftSafetyHarness(cluster)
     harness.checkpoint()
 
