@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .membership import ReconfigurableRaftCluster
+from .membership_replication import MembershipAwareLeaderReplicator
 from .raft import RaftNode, RaftRole
 from .replication import LeaderReplicator, ReplicationError
 
@@ -98,10 +99,16 @@ class LeadershipTransfer:
             leader_commit_index=self.leader.commit_index,
         )
 
-        replicator = LeaderReplicator(
-            self.leader,
-            snapshot_transport=self.snapshot_transport,
-        )
+        if isinstance(cluster, ReconfigurableRaftCluster):
+            replicator = MembershipAwareLeaderReplicator(
+                self.leader,
+                snapshot_transport=self.snapshot_transport,
+            )
+        else:
+            replicator = LeaderReplicator(
+                self.leader,
+                snapshot_transport=self.snapshot_transport,
+            )
         try:
             recovered = replicator.recover_peer(
                 transferee_id,
