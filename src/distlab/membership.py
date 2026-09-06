@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .raft import RaftCluster, RaftNode, RaftRole, RequestVote, RequestVoteResponse
-from .simulator import Message, Simulator
+from .simulator import Simulator
 
 
 class MembershipChangeError(RuntimeError):
