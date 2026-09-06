@@ -68,10 +68,17 @@ class LeadershipTransfer:
                 "leadership transferee must be a distinct peer of the current leader"
             )
         cluster = self.leader.cluster
-        if isinstance(cluster, ReconfigurableRaftCluster) and not cluster.is_voter(transferee_id):
-            raise InvalidLeadershipTransferTarget(
-                f"leadership transferee {transferee_id!r} must be an active voter"
-            )
+        if isinstance(cluster, ReconfigurableRaftCluster):
+            configuration = cluster.voting_configuration
+            if not cluster.is_voter(transferee_id):
+                raise InvalidLeadershipTransferTarget(
+                    f"leadership transferee {transferee_id!r} must be an active voter"
+                )
+            if configuration.new_voters is not None and transferee_id not in configuration.new_voters:
+                raise InvalidLeadershipTransferTarget(
+                    f"leadership transferee {transferee_id!r} must belong to the new voter "
+                    "configuration during joint consensus"
+                )
         if not self.sim.is_alive(transferee_id):
             raise LeadershipTransferTargetUnavailable(
                 f"leadership transferee {transferee_id!r} is not live"
