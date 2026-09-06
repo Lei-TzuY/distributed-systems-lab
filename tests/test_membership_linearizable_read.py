@@ -41,8 +41,7 @@ def test_learners_do_not_inflate_stable_linearizable_read_quorum() -> None:
     sim.crash("n3")
     sim.crash("n4")
     sim.crash("n5")
-    safety = RaftSafetyHarness(cluster)
-    safety.checkpoint()
+    RaftSafetyHarness(cluster).checkpoint()
 
     reader = LinearizableKVReader(kv, replicator)
     assert reader.get("k") == "v1"
@@ -50,7 +49,7 @@ def test_learners_do_not_inflate_stable_linearizable_read_quorum() -> None:
     reads = [record for record in sim.trace if record.kind == "raft-linearizable-read"]
     assert reads[-1].details["acknowledged_voters"] == ("n1", "n2")
     assert reads[-1].details["quorum_mode"] == "stable"
-    safety.checkpoint()
+    RaftSafetyHarness(cluster).checkpoint()
 
 
 def test_joint_linearizable_read_requires_both_voter_majorities() -> None:
