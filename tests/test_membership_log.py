@@ -1,5 +1,3 @@
-from copy import deepcopy
-
 import pytest
 
 from distlab.membership import (
@@ -38,7 +36,7 @@ def _cluster() -> tuple[Simulator, ReconfigurableRaftCluster]:
 def _recreate_cluster(sim: Simulator) -> tuple[Simulator, ReconfigurableRaftCluster]:
     recovered_sim = Simulator()
     for node_id in NODE_IDS:
-        recovered_sim.persistent_state[node_id].update(deepcopy(sim.persistent_state[node_id]))
+        recovered_sim.persistent_state[node_id].update(sim.persistent_state[node_id])
     recovered = ReconfigurableRaftCluster(
         recovered_sim,
         NODE_IDS,
