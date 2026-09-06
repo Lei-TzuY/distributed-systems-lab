@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .kv import ReplicatedKV
+from .membership import ReconfigurableRaftCluster
 from .raft import RaftRole
 from .replication import LeaderReplicator, ReplicationError, ReplicationResponseMissing
 
@@ -22,8 +23,10 @@ class LinearizableKVReader:
 
     The reader is intentionally conservative. A leader must first have a
     current-term committed entry, then obtain successful AppendEntries
-    acknowledgements from enough peers to form a majority in the same term.
-    Only after that barrier succeeds are newly committed entries applied to the
+    acknowledgements from the active voting configuration in the same term.
+    Joint consensus therefore requires independent old/new majorities, while
+    pre-provisioned learners never inflate or satisfy the read quorum. Only
+    after that barrier succeeds are newly committed entries applied to the
     local state machine and the requested key returned.
     """
 
@@ -43,33 +46,52 @@ class LinearizableKVReader:
         self._require_current_leader()
         self._require_current_term_commit()
 
-        cluster_size = len(self.leader.cluster.node_ids)
-        majority = cluster_size // 2 + 1
-        acknowledgements = 1
+        cluster = self.leader.cluster
+        configuration = (
+            cluster.voting_configuration
+            if isinstance(cluster, ReconfigurableRaftCluster)
+            else None
+        )
+        majority = len(cluster.node_ids) // 2 + 1
+        acknowledged = {self.leader.node_id}
         acknowledged_peers: list[str] = []
 
+        def has_read_quorum() -> bool:
+            if configuration is not None:
+                return configuration.has_quorum(acknowledged)
+            return len(acknowledged) >= majority
+
         for peer in self.leader.peers:
-            if acknowledgements >= majority:
+            if has_read_quorum():
                 break
             try:
                 if self.replicator.replicate(peer, max_attempts=max_attempts_per_peer):
-                    acknowledgements += 1
+                    acknowledged.add(peer)
                     acknowledged_peers.append(peer)
             except ReplicationResponseMissing:
                 continue
 
         self._require_current_leader()
-        if acknowledgements < majority:
+        if not has_read_quorum():
             self.leader.sim._record(
                 "raft-linearizable-read-quorum-failed",
                 leader=self.leader.node_id,
                 term=self.leader.current_term,
-                acknowledgements=acknowledgements,
+                acknowledgements=len(acknowledged),
                 majority=majority,
+                acknowledged_voters=(
+                    tuple(sorted(acknowledged & configuration.voters))
+                    if configuration is not None
+                    else tuple(sorted(acknowledged))
+                ),
+                quorum_mode=(
+                    "joint"
+                    if configuration is not None and configuration.is_joint
+                    else "stable"
+                ),
             )
             raise ReadQuorumUnavailable(
-                f"leader {self.leader.node_id!r} confirmed only {acknowledgements} "
-                f"of {majority} required replicas"
+                f"leader {self.leader.node_id!r} could not confirm the active voting quorum"
             )
 
         self.kv.apply_committed(self.leader.node_id)
@@ -82,7 +104,15 @@ class LinearizableKVReader:
             key=key,
             value=value,
             acknowledged_peers=tuple(acknowledged_peers),
+            acknowledged_voters=(
+                tuple(sorted(acknowledged & configuration.voters))
+                if configuration is not None
+                else tuple(sorted(acknowledged))
+            ),
             majority=majority,
+            quorum_mode=(
+                "joint" if configuration is not None and configuration.is_joint else "stable"
+            ),
         )
         return value
 
