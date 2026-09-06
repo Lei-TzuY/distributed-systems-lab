@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .kv import ClientRequest, Delete, Put, ReplicatedKV
 from .linearizability import Get, OperationHistory
+
+if TYPE_CHECKING:
+    from .linearizable_read import LinearizableKVReader
 
 
 class KVClientHistory:
@@ -9,9 +14,9 @@ class KVClientHistory:
 
     A write invocation remains pending until a replica has durably applied the
     corresponding ``ClientRequest``. Retries re-submit the exact same pending
-    request without creating a second logical history operation. Reads are
-    sampled from one replica and completed immediately with the value observed
-    there.
+    request without creating a second logical history operation. Reads may be
+    sampled directly from one replica or routed through ``LinearizableKVReader``
+    so the recorded client response is backed by the real Raft read barrier.
     """
 
     def __init__(self, kv: ReplicatedKV, history: OperationHistory | None = None) -> None:
@@ -107,6 +112,51 @@ class KVClientHistory:
             request_id=None,
             node=node_id,
             result=result,
+        )
+        return result
+
+    def linearizable_read(
+        self,
+        operation_id: str,
+        client_id: str,
+        reader: LinearizableKVReader,
+        key: str,
+        *,
+        max_attempts_per_peer: int = 1,
+    ) -> str | None:
+        """Record a client-visible read backed by the Raft linearizable-read path.
+
+        The invocation is recorded before the quorum barrier so failed reads remain
+        incomplete operations in the history rather than fabricated responses.
+        A reader tied to another replicated state machine is rejected before history
+        mutation to keep the evidence layer and protocol execution on one cluster.
+        """
+
+        if reader.kv is not self.kv:
+            raise ValueError("linearizable reader must use the same replicated KV state")
+
+        operation = Get(key)
+        self.history.invoke(operation_id, client_id, operation)
+        self.sim._record(
+            "client-invoke",
+            operation_id=operation_id,
+            client_id=client_id,
+            request_id=None,
+            operation="get",
+            key=key,
+            node=reader.leader.node_id,
+            consistency="linearizable",
+        )
+        result = reader.get(key, max_attempts_per_peer=max_attempts_per_peer)
+        self.history.respond(operation_id, result)
+        self.sim._record(
+            "client-response",
+            operation_id=operation_id,
+            client_id=client_id,
+            request_id=None,
+            node=reader.leader.node_id,
+            result=result,
+            consistency="linearizable",
         )
         return result
 
