@@ -5,6 +5,7 @@ from distlab.leadership_transfer import (
     LeadershipTransfer,
     LeadershipTransferTargetUnavailable,
 )
+from distlab.membership import ReconfigurableRaftCluster
 from distlab.raft import LogEntry, RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
@@ -26,6 +27,20 @@ def _lagging_transferee_cluster() -> tuple[Simulator, RaftCluster]:
     sim.run()
     assert cluster.node("n1").role is RaftRole.LEADER
     assert cluster.node("n1").current_term == 3
+    return sim, cluster
+
+
+def _joint_transfer_cluster() -> tuple[Simulator, ReconfigurableRaftCluster]:
+    sim = Simulator()
+    cluster = ReconfigurableRaftCluster(
+        sim,
+        ("n1", "n2", "n3", "n4", "n5"),
+        voters=("n1", "n2", "n3"),
+    )
+    cluster.node("n1").start_election()
+    sim.run()
+    assert cluster.node("n1").role is RaftRole.LEADER
+    cluster.begin_joint_consensus("n1", ("n1", "n4", "n5"))
     return sim, cluster
 
 
@@ -82,3 +97,32 @@ def test_transfer_rejects_crashed_target_before_mutating_term() -> None:
     assert cluster.node("n1").current_term == source_term
     assert cluster.node("n1").role is RaftRole.LEADER
     assert not any(record.kind == "raft-leadership-transfer-start" for record in sim.trace)
+
+
+def test_joint_transfer_rejects_outgoing_only_voter_before_side_effects() -> None:
+    sim, cluster = _joint_transfer_cluster()
+    RaftSafetyHarness(cluster).checkpoint()
+    source_term = cluster.node("n1").current_term
+    outgoing_term = cluster.node("n2").current_term
+
+    with pytest.raises(InvalidLeadershipTransferTarget, match="new voter configuration"):
+        LeadershipTransfer(cluster.node("n1")).transfer("n2")
+
+    assert cluster.node("n1").current_term == source_term
+    assert cluster.node("n1").role is RaftRole.LEADER
+    assert cluster.node("n2").current_term == outgoing_term
+    assert not any(record.kind == "raft-leadership-transfer-start" for record in sim.trace)
+    RaftSafetyHarness(cluster).checkpoint()
+
+
+def test_joint_transfer_allows_incoming_new_voter() -> None:
+    _, cluster = _joint_transfer_cluster()
+    RaftSafetyHarness(cluster).checkpoint()
+
+    result = LeadershipTransfer(cluster.node("n1")).transfer("n4")
+
+    assert result.previous_leader_id == "n1"
+    assert result.new_leader_id == "n4"
+    assert cluster.node("n4").role is RaftRole.LEADER
+    assert "n4" in cluster.voting_configuration.new_voters
+    RaftSafetyHarness(cluster).checkpoint()
