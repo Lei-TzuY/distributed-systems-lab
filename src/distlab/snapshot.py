@@ -208,6 +208,7 @@ class KVSnapshotStore:
             raise ValueError("snapshot install cannot roll back applied state beyond its boundary")
 
         self._validate_snapshot_membership(snapshot)
+        self._validate_install_membership(node_id, snapshot, previous)
         persistent = self.sim.persistent_state[node_id]
         previous_log_base_index = node.log_base_index
         previous_last_log_index = node.last_log_index
@@ -220,10 +221,8 @@ class KVSnapshotStore:
         persistent["state_machine_base_index"] = snapshot.last_included_index
         persistent["state_machine_base_term"] = snapshot.last_included_term
         if snapshot.voting_configuration is not None:
-            previous_membership_index = int(persistent.get(self._MEMBERSHIP_COMMIT_INDEX, 0))
-            persistent[self._MEMBERSHIP_COMMIT_INDEX] = max(
-                previous_membership_index,
-                snapshot.voting_configuration.committed_index,
+            persistent[self._MEMBERSHIP_COMMIT_INDEX] = (
+                snapshot.voting_configuration.committed_index
             )
 
         applier = self.kv.applier
@@ -300,6 +299,33 @@ class KVSnapshotStore:
                 raise ValueError("snapshot membership references unknown Raft nodes")
         elif membership is not None:
             raise ValueError("non-reconfigurable Raft snapshot cannot carry voting configuration")
+
+    def _validate_install_membership(
+        self,
+        node_id: str,
+        snapshot: KVSnapshot,
+        previous: KVSnapshot | None,
+    ) -> None:
+        membership = snapshot.voting_configuration
+        if membership is None:
+            return
+
+        persistent = self.sim.persistent_state[node_id]
+        durable_index = int(persistent.get(self._MEMBERSHIP_COMMIT_INDEX, 0))
+        if membership.committed_index < durable_index:
+            raise ValueError(
+                "snapshot membership commit index cannot move behind durable local evidence"
+            )
+
+        if previous is None or previous.voting_configuration is None:
+            return
+        previous_membership = previous.voting_configuration
+        if previous_membership.committed_index != membership.committed_index:
+            return
+        if previous_membership != membership:
+            raise ValueError(
+                "snapshot membership conflicts with durable configuration at same commit index"
+            )
 
     def _client_requests(self, node_id: str) -> tuple[SnapshotClientRequest, ...]:
         requests = self.kv.client_requests(node_id)
