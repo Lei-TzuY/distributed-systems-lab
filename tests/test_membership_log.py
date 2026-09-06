@@ -74,6 +74,37 @@ def test_joint_membership_activates_only_after_log_entry_commits() -> None:
     harness.checkpoint()
 
 
+def test_committed_joint_membership_survives_crash_before_activation() -> None:
+    sim, cluster = _cluster()
+    RaftSafetyHarness(cluster).checkpoint()
+    leader = cluster.node("n1")
+    transition = ReplicatedMembershipTransition(leader)
+    index = transition.propose_joint(("n1", "n4", "n5"))
+    replicator = MembershipAwareLeaderReplicator(leader)
+
+    assert replicator.replicate("n2", max_attempts=2)
+    assert replicator.commit_index == index
+    assert leader.commit_index == index
+    assert cluster.voting_configuration.new_voters is None
+    assert transition.pending_index == index
+    assert max(
+        int(sim.persistent_state[node_id].get("membership_commit_index", 0))
+        for node_id in NODE_IDS
+    ) == index
+    RaftSafetyHarness(cluster).checkpoint()
+
+    recovered_sim, recovered = _recreate_cluster(sim)
+
+    assert recovered.voting_configuration.old_voters == frozenset({"n1", "n2", "n3"})
+    assert recovered.voting_configuration.new_voters == frozenset({"n1", "n4", "n5"})
+    assert any(
+        record.kind == "raft-membership-recovered"
+        and record.details["committed_index"] == index
+        for record in recovered_sim.trace
+    )
+    RaftSafetyHarness(recovered).checkpoint()
+
+
 def test_stable_finalization_waits_for_joint_quorum_commit() -> None:
     sim, cluster = _cluster()
     harness = RaftSafetyHarness(cluster)
