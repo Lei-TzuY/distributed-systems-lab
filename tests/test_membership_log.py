@@ -15,7 +15,6 @@ from distlab.raft import RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
 
-
 NODE_IDS = ("n1", "n2", "n3", "n4", "n5")
 BOOTSTRAP_VOTERS = ("n1", "n2", "n3")
 
