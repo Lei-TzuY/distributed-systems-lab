@@ -27,7 +27,7 @@ def test_stable_commit_quorum_ignores_preprovisioned_learners() -> None:
     index = append_current_term_barrier(leader)
     replicator = MembershipAwareLeaderReplicator(leader)
 
-    assert replicator.replicate("n2", max_attempts=1)
+    assert replicator.replicate("n2", max_attempts=2)
 
     assert index == 1
     assert replicator.commit_index == index
@@ -44,13 +44,13 @@ def test_joint_commit_requires_old_and_new_majorities() -> None:
     index = append_current_term_barrier(leader)
     replicator = MembershipAwareLeaderReplicator(leader)
 
-    assert replicator.replicate("n2", max_attempts=1)
+    assert replicator.replicate("n2", max_attempts=2)
     assert replicator.commit_index == 0
 
-    assert replicator.replicate("n3", max_attempts=1)
+    assert replicator.replicate("n3", max_attempts=2)
     assert replicator.commit_index == 0
 
-    assert replicator.replicate("n4", max_attempts=1)
+    assert replicator.replicate("n4", max_attempts=2)
     assert replicator.commit_index == index
     assert leader.commit_index == index
 
