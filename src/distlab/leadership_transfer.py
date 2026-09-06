@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .membership import ReconfigurableRaftCluster
 from .raft import RaftNode, RaftRole
 from .replication import LeaderReplicator, ReplicationError
 
@@ -15,7 +16,7 @@ class LeadershipTransferError(RuntimeError):
 
 
 class InvalidLeadershipTransferTarget(LeadershipTransferError):
-    """Raised when the requested transferee is not a distinct cluster peer."""
+    """Raised when the requested transferee cannot become leader."""
 
 
 class LeadershipTransferTargetUnavailable(LeadershipTransferError):
@@ -66,13 +67,18 @@ class LeadershipTransfer:
             raise InvalidLeadershipTransferTarget(
                 "leadership transferee must be a distinct peer of the current leader"
             )
+        cluster = self.leader.cluster
+        if isinstance(cluster, ReconfigurableRaftCluster) and not cluster.is_voter(transferee_id):
+            raise InvalidLeadershipTransferTarget(
+                f"leadership transferee {transferee_id!r} must be an active voter"
+            )
         if not self.sim.is_alive(transferee_id):
             raise LeadershipTransferTargetUnavailable(
                 f"leadership transferee {transferee_id!r} is not live"
             )
 
         previous_term = self.leader.current_term
-        target = self.leader.cluster.node(transferee_id)
+        target = cluster.node(transferee_id)
         self.sim._record(
             "raft-leadership-transfer-start",
             leader=self.leader.node_id,
@@ -132,7 +138,7 @@ class LeadershipTransfer:
         )
 
         target.start_election()
-        event_budget = max(4, len(self.leader.cluster.node_ids) * 4)
+        event_budget = max(4, len(cluster.node_ids) * 4)
         for _ in range(event_budget):
             if self._transfer_elected(target, previous_term):
                 break
