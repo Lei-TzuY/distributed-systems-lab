@@ -74,7 +74,10 @@ class LeadershipTransfer:
                 raise InvalidLeadershipTransferTarget(
                     f"leadership transferee {transferee_id!r} must be an active voter"
                 )
-            if configuration.new_voters is not None and transferee_id not in configuration.new_voters:
+            if (
+                configuration.new_voters is not None
+                and transferee_id not in configuration.new_voters
+            ):
                 raise InvalidLeadershipTransferTarget(
                     f"leadership transferee {transferee_id!r} must belong to the new voter "
                     "configuration during joint consensus"
