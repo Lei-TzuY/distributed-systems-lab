@@ -152,14 +152,30 @@ class SnapshotTransport:
                     incoming_index=request.snapshot.last_included_index,
                     installed_index=installed_index,
                 )
+                success = True
             else:
-                self.store.install(
-                    request.follower_id,
-                    request.snapshot,
-                    preserve_matching_suffix=True,
-                )
-                installed_index = request.snapshot.last_included_index
-            success = True
+                try:
+                    self.store.install(
+                        request.follower_id,
+                        request.snapshot,
+                        preserve_matching_suffix=True,
+                    )
+                except ValueError as exc:
+                    installed_index = follower.log_base_index
+                    success = False
+                    self.sim._record(
+                        "raft-install-snapshot-rejected",
+                        leader=request.leader_id,
+                        follower=request.follower_id,
+                        term=request.term,
+                        incoming_index=request.snapshot.last_included_index,
+                        installed_index=installed_index,
+                        reason=str(exc),
+                        request_id=request.request_id,
+                    )
+                else:
+                    installed_index = request.snapshot.last_included_index
+                    success = True
 
         response = InstallSnapshotResponse(
             term=follower.current_term,
