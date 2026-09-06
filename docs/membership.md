@@ -24,4 +24,10 @@ Finalization follows the same commit-before-activation rule:
 
 Only one membership command may be pending at a time. A stale or replaced leader cannot apply a pending command, and finalization is rejected unless the leader belongs to the new voter set. Proposal, commit, and finalization events are recorded in the deterministic trace.
 
-This is still intentionally short of full restart-safe dynamic membership. The committed commands are durable Raft history, but a restarted `ReconfigurableRaftCluster` does not yet reconstruct its active voting configuration by replaying committed membership entries or a membership-bearing snapshot. That recovery rule is a separate correctness slice.
+## Restart and snapshot recovery
+
+Committed membership activation persists a per-replica membership commit watermark. Cluster recreation replays only membership commands at or below the highest durable watermark, so later uncommitted proposals cannot become authoritative after restart.
+
+Log compaction preserves that evidence in `KVSnapshot`: snapshots created by a `ReconfigurableRaftCluster` carry the stable or joint voting configuration effective at the snapshot boundary together with the membership commit index it represents. Recovery validates the snapshot against the compacted Raft index/term, uses its configuration as the prefix state, and replays only retained committed membership entries after the boundary. Missing, contradictory, or unknown-node membership metadata fails closed instead of guessing a quorum.
+
+This keeps membership recovery aligned with the same durable snapshot boundary used by Raft and the replicated state machine while ordinary non-reconfigurable KV snapshots remain unchanged.
