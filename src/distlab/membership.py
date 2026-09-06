@@ -53,13 +53,13 @@ def _has_majority(voters: frozenset[str], votes: frozenset[str]) -> bool:
 
 
 class ReconfigurableRaftCluster(RaftCluster):
-    """Raft cluster whose elections obey stable and joint voter configurations.
+    """Raft cluster whose elections obey durable stable/joint configurations.
 
     All ``node_ids`` are pre-provisioned transport participants. ``voters`` selects
-    the initial stable voting set; other nodes are learners until a configuration
-    transition includes them. This vertical slice intentionally scopes membership
-    changes to election quorums; configuration entries are not yet replicated in
-    the Raft log.
+    the bootstrap stable voting set; other nodes are learners until a committed
+    configuration transition includes them. If persistent state already contains
+    committed membership history, construction recovers the active configuration
+    before any election timer is armed.
     """
 
     def __init__(
@@ -88,7 +88,8 @@ class ReconfigurableRaftCluster(RaftCluster):
         self.sim = sim
         self.node_ids = node_ids
         self._leaders_by_term: dict[int, str] = {}
-        self._voting_configuration = VotingConfiguration(initial_voters)
+        initial_configuration = VotingConfiguration(initial_voters)
+        self._voting_configuration = initial_configuration
         self.nodes = {
             node_id: ReconfigurableRaftNode(
                 cluster=self,
@@ -100,6 +101,10 @@ class ReconfigurableRaftCluster(RaftCluster):
             )
             for node_id in node_ids
         }
+
+        from .membership_log import recover_voting_configuration
+
+        self._voting_configuration = recover_voting_configuration(self, initial_configuration)
         for node_id, node in self.nodes.items():
             sim.register(node_id, node.handle_message, restart_handler=node.handle_restart)
         for node in self.nodes.values():
