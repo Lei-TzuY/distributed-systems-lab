@@ -42,10 +42,10 @@ def _ready_linearizable_reader() -> tuple[
 
 
 def test_client_history_records_successful_linearizable_read() -> None:
-    sim, _, _, clients, reader, harness = _ready_linearizable_reader()
+    sim, cluster, _, clients, reader, _ = _ready_linearizable_reader()
 
     assert clients.linearizable_read("read-1", "client-a", reader, "k") is None
-    harness.checkpoint()
+    RaftSafetyHarness(cluster).checkpoint()
 
     completed = clients.history.completed()
     assert len(completed) == 1
