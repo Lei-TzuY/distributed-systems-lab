@@ -37,7 +37,8 @@ class KVClientSession:
     Raft read barrier and cannot overtake a pending write, preserving client
     program order across writes and reads. Sessions may be reconstructed from a
     replica's applied deduplication state, including state restored from a
-    durable KV snapshot.
+    durable KV snapshot; ``recover_linearizable`` should be used when recovery
+    must not trust a potentially stale replica.
     """
 
     def __init__(
@@ -76,6 +77,38 @@ class KVClientSession:
             client_id=client_id,
             node=node_id,
             last_completed_request_id=last_completed,
+        )
+        return session
+
+    @classmethod
+    def recover_linearizable(
+        cls,
+        clients: KVClientHistory,
+        client_id: str,
+        reader: LinearizableKVReader,
+        *,
+        max_attempts_per_peer: int = 1,
+    ) -> KVClientSession:
+        """Recover the sequence floor from quorum-confirmed leader state.
+
+        This prevents a lagging follower from moving a reconstructed client's
+        monotonic request-id floor backwards. The existing Raft linearizable
+        read barrier first confirms current-leader authority and applies all
+        committed entries to the leader state machine; only then is the durable
+        client deduplication state inspected.
+        """
+
+        if reader.kv is not clients.kv:
+            raise ValueError("client history and reader must belong to the same KV state")
+        evidence = reader.barrier(max_attempts_per_peer=max_attempts_per_peer)
+        session = cls.recover(clients, client_id, evidence.leader)
+        clients.sim._record(
+            "client-session-recover-linearizable",
+            client_id=client_id,
+            node=evidence.leader,
+            term=evidence.term,
+            commit_index=evidence.commit_index,
+            last_completed_request_id=session.last_completed_request_id,
         )
         return session
 
