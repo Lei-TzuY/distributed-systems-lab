@@ -98,16 +98,17 @@ class LinearizableKVReader:
         self._require_current_term_commit()
 
         cluster = self.leader.cluster
-        configuration: VotingConfiguration | None = (
-            cluster.voting_configuration
-            if isinstance(cluster, ReconfigurableRaftCluster)
-            else None
-        )
         majority = len(cluster.node_ids) // 2 + 1
         acknowledged = {self.leader.node_id}
         acknowledged_peers: list[str] = []
 
+        def active_configuration() -> VotingConfiguration | None:
+            if isinstance(cluster, ReconfigurableRaftCluster):
+                return cluster.voting_configuration
+            return None
+
         def has_read_quorum() -> bool:
+            configuration = active_configuration()
             if configuration is not None:
                 return configuration.has_quorum(acknowledged)
             return len(acknowledged) >= majority
@@ -123,6 +124,7 @@ class LinearizableKVReader:
                 continue
 
         self._require_current_leader()
+        configuration = active_configuration()
         acknowledged_voters = (
             tuple(sorted(acknowledged & configuration.voters))
             if configuration is not None
