@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .kv import ReplicatedKV
-from .membership import ReconfigurableRaftCluster
+from .membership import ReconfigurableRaftCluster, VotingConfiguration
 from .raft import RaftRole
 from .replication import LeaderReplicator, ReplicationError, ReplicationResponseMissing
 
@@ -16,6 +18,19 @@ class CurrentTermCommitRequired(LinearizableReadError):
 
 class ReadQuorumUnavailable(LinearizableReadError):
     """Raised when the leader cannot confirm authority with a majority."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReadBarrierEvidence:
+    """Deterministic evidence produced by a successful linearizable read barrier."""
+
+    leader: str
+    term: int
+    commit_index: int
+    acknowledged_peers: tuple[str, ...]
+    acknowledged_voters: tuple[str, ...]
+    majority: int
+    quorum_mode: str
 
 
 class LinearizableKVReader:
@@ -37,9 +52,45 @@ class LinearizableKVReader:
         if kv.cluster is not self.leader.cluster:
             raise ValueError("KV state and leader replicator must belong to the same cluster")
 
+    def barrier(self, *, max_attempts_per_peer: int = 1) -> ReadBarrierEvidence:
+        """Confirm current-leader authority and apply committed state locally."""
+
+        evidence = self._confirm_authority(max_attempts_per_peer=max_attempts_per_peer)
+        self.kv.apply_committed(self.leader.node_id)
+        self.leader.sim._record(
+            "raft-linearizable-read-barrier",
+            leader=evidence.leader,
+            term=evidence.term,
+            commit_index=evidence.commit_index,
+            acknowledged_peers=evidence.acknowledged_peers,
+            acknowledged_voters=evidence.acknowledged_voters,
+            majority=evidence.majority,
+            quorum_mode=evidence.quorum_mode,
+        )
+        return evidence
+
     def get(self, key: str, *, max_attempts_per_peer: int = 1) -> str | None:
         if not key:
             raise ValueError("KV key must be non-empty")
+        evidence = self._confirm_authority(max_attempts_per_peer=max_attempts_per_peer)
+
+        self.kv.apply_committed(self.leader.node_id)
+        value = self.kv.get(self.leader.node_id, key)
+        self.leader.sim._record(
+            "raft-linearizable-read",
+            leader=evidence.leader,
+            term=evidence.term,
+            commit_index=evidence.commit_index,
+            key=key,
+            value=value,
+            acknowledged_peers=evidence.acknowledged_peers,
+            acknowledged_voters=evidence.acknowledged_voters,
+            majority=evidence.majority,
+            quorum_mode=evidence.quorum_mode,
+        )
+        return value
+
+    def _confirm_authority(self, *, max_attempts_per_peer: int) -> ReadBarrierEvidence:
         if max_attempts_per_peer <= 0:
             raise ValueError("max_attempts_per_peer must be positive")
 
@@ -47,7 +98,7 @@ class LinearizableKVReader:
         self._require_current_term_commit()
 
         cluster = self.leader.cluster
-        configuration = (
+        configuration: VotingConfiguration | None = (
             cluster.voting_configuration
             if isinstance(cluster, ReconfigurableRaftCluster)
             else None
@@ -72,6 +123,14 @@ class LinearizableKVReader:
                 continue
 
         self._require_current_leader()
+        acknowledged_voters = (
+            tuple(sorted(acknowledged & configuration.voters))
+            if configuration is not None
+            else tuple(sorted(acknowledged))
+        )
+        quorum_mode = (
+            "joint" if configuration is not None and configuration.is_joint else "stable"
+        )
         if not has_read_quorum():
             self.leader.sim._record(
                 "raft-linearizable-read-quorum-failed",
@@ -79,42 +138,22 @@ class LinearizableKVReader:
                 term=self.leader.current_term,
                 acknowledgements=len(acknowledged),
                 majority=majority,
-                acknowledged_voters=(
-                    tuple(sorted(acknowledged & configuration.voters))
-                    if configuration is not None
-                    else tuple(sorted(acknowledged))
-                ),
-                quorum_mode=(
-                    "joint"
-                    if configuration is not None and configuration.is_joint
-                    else "stable"
-                ),
+                acknowledged_voters=acknowledged_voters,
+                quorum_mode=quorum_mode,
             )
             raise ReadQuorumUnavailable(
                 f"leader {self.leader.node_id!r} could not confirm the active voting quorum"
             )
 
-        self.kv.apply_committed(self.leader.node_id)
-        value = self.kv.get(self.leader.node_id, key)
-        self.leader.sim._record(
-            "raft-linearizable-read",
+        return ReadBarrierEvidence(
             leader=self.leader.node_id,
             term=self.leader.current_term,
             commit_index=self.leader.commit_index,
-            key=key,
-            value=value,
             acknowledged_peers=tuple(acknowledged_peers),
-            acknowledged_voters=(
-                tuple(sorted(acknowledged & configuration.voters))
-                if configuration is not None
-                else tuple(sorted(acknowledged))
-            ),
+            acknowledged_voters=acknowledged_voters,
             majority=majority,
-            quorum_mode=(
-                "joint" if configuration is not None and configuration.is_joint else "stable"
-            ),
+            quorum_mode=quorum_mode,
         )
-        return value
 
     def _require_current_term_commit(self) -> None:
         commit_index = self.leader.commit_index
