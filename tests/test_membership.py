@@ -83,6 +83,71 @@ def test_finalize_new_configuration_fences_removed_voters() -> None:
     assert vote.details["candidate_eligible"] is False
 
 
+def test_initial_learner_election_timeout_is_disabled() -> None:
+    sim = Simulator()
+    cluster = ReconfigurableRaftCluster(
+        sim,
+        ("n1", "n2", "n3", "n4"),
+        voters=("n1", "n2", "n3"),
+        election_timeouts={"n1": 100, "n2": 110, "n3": 120, "n4": 1},
+    )
+    harness = RaftSafetyHarness(cluster)
+
+    disabled = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-election-timeout-disabled"
+        and record.details["node"] == "n4"
+    ]
+    assert disabled[-1].details["reason"] == "initial-non-voter"
+    assert not any(
+        record.kind == "raft-election-timeout-reset" and record.details["node"] == "n4"
+        for record in sim.trace
+    )
+
+    sim.run(max_events=1)
+
+    assert sim.time == 100
+    assert cluster.node("n4").current_term == 0
+    assert cluster.node("n4").role is RaftRole.FOLLOWER
+    harness.checkpoint()
+
+
+def test_promoted_learner_arms_election_timeout() -> None:
+    sim = Simulator()
+    cluster = ReconfigurableRaftCluster(
+        sim,
+        ("n1", "n2", "n3", "n4"),
+        voters=("n1", "n2", "n3"),
+        election_timeouts={"n1": 100, "n2": 110, "n3": 120, "n4": 1},
+    )
+    harness = RaftSafetyHarness(cluster)
+
+    cluster.node("n1").start_election()
+    sim.run(max_events=4)
+    assert cluster.node("n1").role is RaftRole.LEADER
+
+    cluster.begin_joint_consensus("n1", ("n1", "n2", "n3", "n4"))
+    promoted_resets = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-election-timeout-reset"
+        and record.details["node"] == "n4"
+        and record.details["reason"] == "membership-joint-voter-added"
+    ]
+    assert promoted_resets
+
+    sim.run(max_events=3)
+
+    starts = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-election-start" and record.details["node"] == "n4"
+    ]
+    assert starts[-1].details["term"] == 2
+    harness.checkpoint()
+
+
 def test_removed_candidate_cannot_win_from_delayed_vote_responses() -> None:
     sim = Simulator(
         fault_plan=FaultPlan(
@@ -114,6 +179,8 @@ def test_removed_candidate_cannot_win_from_delayed_vote_responses() -> None:
     cluster.begin_joint_consensus("n1", ("n1", "n3", "n4"))
     cluster.finalize_membership("n1")
     assert not cluster.is_voter("n2")
+    assert cluster.node("n2").role is RaftRole.FOLLOWER
+    assert cluster.node("n2").votes_received == frozenset()
 
     sim.run()
 
