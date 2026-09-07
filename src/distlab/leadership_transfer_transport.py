@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .membership import ReconfigurableRaftCluster
 from .raft import RaftCluster, RaftRole
 from .simulator import Message, Simulator
 
@@ -126,6 +127,15 @@ class LeadershipTransferTransport:
             reason = "source-not-recorded-leader"
         elif leader.role is not RaftRole.LEADER or leader.current_term != request.term:
             reason = "source-no-longer-current-leader"
+        elif isinstance(self.cluster, ReconfigurableRaftCluster):
+            configuration = self.cluster.voting_configuration
+            if not self.cluster.is_voter(request.transferee_id):
+                reason = "transferee-not-voter"
+            elif (
+                configuration.new_voters is not None
+                and request.transferee_id not in configuration.new_voters
+            ):
+                reason = "transferee-outgoing-only"
 
         if reason is not None:
             self.sim._record(
