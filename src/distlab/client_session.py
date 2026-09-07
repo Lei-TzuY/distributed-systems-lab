@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .client_history import KVClientHistory
 from .kv import ClientRequest, Delete, Put
+
+if TYPE_CHECKING:
+    from .linearizable_read import LinearizableKVReader
 
 
 class ClientSessionError(RuntimeError):
@@ -11,7 +15,7 @@ class ClientSessionError(RuntimeError):
 
 
 class SessionWritePending(ClientSessionError):
-    """Raised when a session tries to pipeline a second write."""
+    """Raised when another session operation would overtake a pending write."""
 
 
 class StaleClientRequest(ClientSessionError):
@@ -29,9 +33,11 @@ class KVClientSession:
 
     Exact retries reuse the active ``ClientRequest`` through ``retry_write``.
     A new logical write must use a request id strictly greater than the most
-    recently completed request. Sessions may be reconstructed from a replica's
-    applied deduplication state, including state restored from a durable KV
-    snapshot.
+    recently completed request. Linearizable reads are routed through the real
+    Raft read barrier and cannot overtake a pending write, preserving client
+    program order across writes and reads. Sessions may be reconstructed from a
+    replica's applied deduplication state, including state restored from a
+    durable KV snapshot.
     """
 
     def __init__(
@@ -115,6 +121,33 @@ class KVClientSession:
             client_id=self.client_id,
             request_id=self.last_completed_request_id,
             node=node_id,
+        )
+
+    def linearizable_read(
+        self,
+        operation_id: str,
+        reader: LinearizableKVReader,
+        key: str,
+        *,
+        max_attempts_per_peer: int = 1,
+    ) -> str | None:
+        """Execute a client-program-ordered linearizable read.
+
+        A pending write must first complete (or be retried to completion) so a
+        later read cannot appear before it in the client-visible history.
+        """
+
+        if self._pending is not None:
+            raise SessionWritePending(
+                f"client {self.client_id!r} cannot read while write "
+                f"{self._pending.operation_id!r} is pending"
+            )
+        return self.clients.linearizable_read(
+            operation_id,
+            self.client_id,
+            reader,
+            key,
+            max_attempts_per_peer=max_attempts_per_peer,
         )
 
     def pending_write(self) -> PendingSessionWrite | None:
