@@ -11,8 +11,9 @@ class MembershipAwareLeaderReplicator(LeaderReplicator):
     commit quorum. During joint consensus, a committed index must be acknowledged by
     independent majorities of both the old and new voter sets, matching the election
     quorum rule used by ``ReconfigurableRaftCluster``. A pending joint-consensus entry
-    is itself committed against the proposed joint configuration so the new voter
-    majority has the transition before that configuration becomes active.
+    and any later entry whose commit would cover it use the proposed joint
+    configuration, so the new voter majority has the transition before it becomes
+    active.
     """
 
     def advance_commit_index(self) -> int:
@@ -63,10 +64,17 @@ class MembershipAwareLeaderReplicator(LeaderReplicator):
         cluster = self.leader.cluster
         assert isinstance(cluster, ReconfigurableRaftCluster)
         active = cluster.voting_configuration
-        command = self.leader.log_view.entry_at(index).command
-        if not active.is_joint and isinstance(command, JointConsensusCommand):
-            proposed = VotingConfiguration(active.old_voters, frozenset(command.new_voters))
-            return proposed, "joint-proposal"
+        if not active.is_joint:
+            log = self.leader.log_view
+            first_uncommitted = max(self._commit_index + 1, log.first_retained_index)
+            for prefix_index in range(first_uncommitted, index + 1):
+                command = log.entry_at(prefix_index).command
+                if isinstance(command, JointConsensusCommand):
+                    proposed = VotingConfiguration(
+                        active.old_voters,
+                        frozenset(command.new_voters),
+                    )
+                    return proposed, "joint-proposal"
         return active, "joint" if active.is_joint else "stable"
 
     def _persist_committed_membership(self, commit_index: int) -> None:
