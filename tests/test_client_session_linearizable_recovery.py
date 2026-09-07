@@ -2,7 +2,7 @@ import pytest
 
 from distlab.client_history import KVClientHistory
 from distlab.client_session import KVClientSession, StaleClientRequest
-from distlab.kv import ClientRequest, Put, ReplicatedKV
+from distlab.kv import ClientRequest, ClientRequestConflict, Put, ReplicatedKV
 from distlab.linearizable_read import LinearizableKVReader, ReadQuorumUnavailable
 from distlab.raft import LogEntry, RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
@@ -61,6 +61,28 @@ def test_linearizable_session_recovery_uses_quorum_confirmed_leader_dedup_state(
     assert len(linearized) == 1
     assert linearized[0].details["node"] == "n1"
     assert linearized[0].details["last_completed_request_id"] == 5
+    RaftSafetyHarness(cluster).checkpoint()
+
+
+def test_stale_session_cannot_complete_conflicting_committed_request_identity() -> None:
+    sim, cluster, kv, clients, _ = _cluster_with_stale_follower()
+    stale = KVClientSession.recover(clients, "writer", "n3")
+    assert stale.last_completed_request_id == -1
+
+    request = stale.invoke_write("conflict", 5, Put("x", "replacement"))
+
+    with pytest.raises(ClientRequestConflict):
+        stale.complete_write("conflict", "n1")
+
+    assert stale.pending_write() is not None
+    assert stale.pending_write().request == request
+    assert clients.pending_write("conflict") == request
+    assert kv.get("n1", "x") == "five"
+    assert [
+        record
+        for record in sim.trace
+        if record.kind == "client-response" and record.details["operation_id"] == "conflict"
+    ] == []
     RaftSafetyHarness(cluster).checkpoint()
 
 
