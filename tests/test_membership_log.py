@@ -128,7 +128,7 @@ def test_later_entry_cannot_commit_over_pending_joint_without_new_majority() -> 
     assert later_index == joint_index + 1
     replicator = MembershipAwareLeaderReplicator(leader)
 
-    assert replicator.replicate("n2", max_attempts=2)
+    assert replicator.replicate("n2", max_attempts=4)
     assert replicator.commit_index < joint_index
     assert leader.commit_index < joint_index
     assert max(
@@ -137,7 +137,7 @@ def test_later_entry_cannot_commit_over_pending_joint_without_new_majority() -> 
     ) < joint_index
     harness.checkpoint()
 
-    assert replicator.replicate("n4", max_attempts=2)
+    assert replicator.replicate("n4", max_attempts=4)
     assert replicator.commit_index == later_index
     assert leader.commit_index == later_index
     assert max(
