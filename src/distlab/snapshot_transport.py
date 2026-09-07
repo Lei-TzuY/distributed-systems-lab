@@ -108,6 +108,8 @@ class SnapshotTransport:
         if sim is not self.sim:
             raise ValueError("snapshot transport invoked by a different simulator")
         payload = message.payload
+        if self._reject_invalid_envelope(message, payload):
+            return
         if isinstance(payload, InstallSnapshotRequest):
             self._handle_request(payload)
             return
@@ -115,6 +117,40 @@ class SnapshotTransport:
             self._handle_response(payload)
             return
         raise TypeError(f"unsupported snapshot message {type(payload).__name__}")
+
+    def _reject_invalid_envelope(self, message: Message, payload: object) -> bool:
+        if isinstance(payload, InstallSnapshotRequest):
+            expected_src = payload.leader_id
+            expected_dst = payload.follower_id
+        elif isinstance(payload, InstallSnapshotResponse):
+            expected_src = payload.follower_id
+            expected_dst = payload.leader_id
+        else:
+            return False
+
+        expected_delivery_dst = self.endpoint(expected_dst)
+        reason: str | None = None
+        if message.src != expected_src:
+            reason = "source-identity-mismatch"
+        elif message.dst != expected_dst:
+            reason = "destination-identity-mismatch"
+        elif message.delivery_dst != expected_delivery_dst:
+            reason = "delivery-endpoint-mismatch"
+        if reason is None:
+            return False
+
+        self.sim._record(
+            "raft-snapshot-envelope-rejected",
+            src=message.src,
+            dst=message.dst,
+            delivery_dst=message.delivery_dst,
+            payload_type=type(payload).__name__,
+            expected_src=expected_src,
+            expected_dst=expected_dst,
+            expected_delivery_dst=expected_delivery_dst,
+            reason=reason,
+        )
+        return True
 
     def _handle_request(self, request: InstallSnapshotRequest) -> None:
         follower = self.cluster.node(request.follower_id)
