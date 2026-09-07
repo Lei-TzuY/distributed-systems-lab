@@ -246,6 +246,18 @@ class ReconfigurableRaftNode(RaftNode):
             return
         if response.term != self.current_term or self.role is not RaftRole.CANDIDATE:
             return
+        if not self.cluster.is_voter(self.node_id):
+            volatile = self.sim.volatile_state[self.node_id]
+            volatile["role"] = RaftRole.FOLLOWER.value
+            volatile["votes_received"] = set()
+            self._election_timer_generation += 1
+            self.sim._record(
+                "raft-election-abort",
+                node=self.node_id,
+                term=self.current_term,
+                reason="candidate-not-voter",
+            )
+            return
         if not response.vote_granted or not self.cluster.is_voter(response.voter_id):
             return
         votes = self.sim.volatile_state[self.node_id].setdefault("votes_received", set())
