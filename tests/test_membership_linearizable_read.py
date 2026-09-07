@@ -70,3 +70,37 @@ def test_joint_linearizable_read_requires_both_voter_majorities() -> None:
     assert failures[-1].details["acknowledged_voters"] == ("n1", "n2", "n3")
     assert failures[-1].details["quorum_mode"] == "joint"
     safety.checkpoint()
+
+
+def test_read_barrier_revalidates_membership_after_peer_acknowledgement() -> None:
+    sim, cluster, replicator, kv = _reader_cluster()
+    sim.crash("n4")
+    sim.crash("n5")
+    safety = RaftSafetyHarness(cluster)
+    safety.checkpoint()
+
+    original_replicate = replicator.replicate
+    transitioned = False
+
+    def replicate_and_reconfigure(peer: str, *, max_attempts: int = 32) -> bool:
+        nonlocal transitioned
+        replicated = original_replicate(peer, max_attempts=max_attempts)
+        if peer == "n2" and replicated and not transitioned:
+            cluster.begin_joint_consensus("n1", ("n1", "n4", "n5"))
+            transitioned = True
+        return replicated
+
+    replicator.replicate = replicate_and_reconfigure  # type: ignore[method-assign]
+    reader = LinearizableKVReader(kv, replicator)
+
+    with pytest.raises(ReadQuorumUnavailable):
+        reader.get("k", max_attempts_per_peer=1)
+
+    assert transitioned is True
+    failures = [
+        record for record in sim.trace if record.kind == "raft-linearizable-read-quorum-failed"
+    ]
+    assert failures[-1].details["acknowledged_voters"] == ("n1", "n2", "n3")
+    assert failures[-1].details["quorum_mode"] == "joint"
+    assert not [record for record in sim.trace if record.kind == "raft-linearizable-read"]
+    safety.checkpoint()
