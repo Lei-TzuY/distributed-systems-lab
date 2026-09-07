@@ -130,6 +130,17 @@ class LeadershipTransfer:
                 f"leadership transferee {transferee_id!r} did not catch up"
             )
 
+        if self.leader.role is not RaftRole.LEADER or self.leader.current_term != previous_term:
+            self._record_failure(
+                transferee_id,
+                previous_term,
+                stage="catch-up",
+                reason="source leader lost leadership during catch-up",
+            )
+            raise LeadershipTransferIncomplete(
+                "source leader lost leadership during transferee catch-up"
+            )
+
         if (
             target.last_log_index != self.leader.last_log_index
             or target.last_log_term != self.leader.last_log_term
