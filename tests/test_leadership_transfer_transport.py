@@ -1,5 +1,6 @@
 from distlab.leadership_transfer import LeadershipTransfer
 from distlab.leadership_transfer_transport import LeadershipTransferTransport, TimeoutNow
+from distlab.membership import ReconfigurableRaftCluster
 from distlab.raft import RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import FaultAction, FaultPlan, FaultRule, Simulator
@@ -8,6 +9,16 @@ from distlab.simulator import FaultAction, FaultPlan, FaultRule, Simulator
 def _elected_cluster(*, fault_plan: FaultPlan | None = None) -> tuple[Simulator, RaftCluster]:
     sim = Simulator(fault_plan=fault_plan)
     cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    cluster.node("n1").start_election()
+    sim.run()
+    assert cluster.node("n1").role is RaftRole.LEADER
+    assert cluster.node("n1").current_term == 1
+    return sim, cluster
+
+
+def _elected_reconfigurable_cluster() -> tuple[Simulator, ReconfigurableRaftCluster]:
+    sim = Simulator()
+    cluster = ReconfigurableRaftCluster(sim, ("n1", "n2", "n3"))
     cluster.node("n1").start_election()
     sim.run()
     assert cluster.node("n1").role is RaftRole.LEADER
@@ -82,4 +93,53 @@ def test_delayed_timeout_now_is_rejected_after_source_loses_leadership() -> None
     assert rejected[-1].details["transferee"] == "n2"
     assert rejected[-1].details["term"] == 1
     assert rejected[-1].details["reason"] == "source-no-longer-current-leader"
+    harness.checkpoint()
+
+
+def test_timeout_now_rejects_transferee_that_becomes_outgoing_only_before_delivery() -> None:
+    sim, cluster = _elected_reconfigurable_cluster()
+    transport = LeadershipTransferTransport.for_cluster(cluster)
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+
+    transport.send_timeout_now("n1", "n2", term=1)
+    cluster.begin_joint_consensus("n1", ("n1", "n3"))
+    sim.run(max_events=1)
+
+    assert cluster.node("n1").role is RaftRole.LEADER
+    assert cluster.node("n1").current_term == 1
+    assert cluster.node("n2").role is RaftRole.FOLLOWER
+    assert cluster.node("n2").current_term == 1
+    assert not any(record.kind == "raft-timeout-now-delivered" for record in sim.trace)
+
+    rejected = [record for record in sim.trace if record.kind == "raft-timeout-now-rejected"]
+    assert rejected[-1].details["leader"] == "n1"
+    assert rejected[-1].details["transferee"] == "n2"
+    assert rejected[-1].details["term"] == 1
+    assert rejected[-1].details["reason"] == "transferee-outgoing-only"
+    harness.checkpoint()
+
+
+def test_timeout_now_rejects_transferee_removed_before_delivery() -> None:
+    sim, cluster = _elected_reconfigurable_cluster()
+    transport = LeadershipTransferTransport.for_cluster(cluster)
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+
+    transport.send_timeout_now("n1", "n2", term=1)
+    cluster.begin_joint_consensus("n1", ("n1", "n3"))
+    cluster.finalize_membership("n1")
+    sim.run(max_events=1)
+
+    assert cluster.node("n1").role is RaftRole.LEADER
+    assert cluster.node("n1").current_term == 1
+    assert cluster.node("n2").role is RaftRole.FOLLOWER
+    assert cluster.node("n2").current_term == 1
+    assert not any(record.kind == "raft-timeout-now-delivered" for record in sim.trace)
+
+    rejected = [record for record in sim.trace if record.kind == "raft-timeout-now-rejected"]
+    assert rejected[-1].details["leader"] == "n1"
+    assert rejected[-1].details["transferee"] == "n2"
+    assert rejected[-1].details["term"] == 1
+    assert rejected[-1].details["reason"] == "transferee-not-voter"
     harness.checkpoint()
