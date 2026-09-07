@@ -19,10 +19,21 @@ def _snapshot() -> KVSnapshot:
     )
 
 
-def _transport(sim: Simulator, cluster: RaftCluster) -> tuple[ReplicatedKV, KVSnapshotStore, SnapshotTransport]:
+def _transport(
+    sim: Simulator,
+    cluster: RaftCluster,
+) -> tuple[ReplicatedKV, KVSnapshotStore, SnapshotTransport]:
     kv = ReplicatedKV(cluster)
     store = KVSnapshotStore(cluster, kv)
     return kv, store, SnapshotTransport(store)
+
+
+def _rejections(sim: Simulator) -> list[object]:
+    return [
+        record
+        for record in sim.trace
+        if record.kind == "raft-snapshot-envelope-rejected"
+    ]
 
 
 def test_forged_install_snapshot_request_cannot_advance_follower_term_or_install() -> None:
@@ -48,7 +59,7 @@ def test_forged_install_snapshot_request_cannot_advance_follower_term_or_install
     assert follower.log_base_index == 0
     assert store.latest("n3") is None
     assert kv.snapshot("n3") == {}
-    rejected = [record for record in sim.trace if record.kind == "raft-snapshot-envelope-rejected"]
+    rejected = _rejections(sim)
     assert len(rejected) == 1
     assert rejected[0].details["reason"] == "source-identity-mismatch"
     assert rejected[0].details["expected_src"] == "n1"
@@ -82,7 +93,7 @@ def test_forged_install_snapshot_response_cannot_advance_leader_term() -> None:
 
     assert leader.current_term == term_before
     assert leader.role is RaftRole.LEADER
-    rejected = [record for record in sim.trace if record.kind == "raft-snapshot-envelope-rejected"]
+    rejected = _rejections(sim)
     assert len(rejected) == 1
     assert rejected[0].details["reason"] == "source-identity-mismatch"
     assert rejected[0].details["expected_src"] == "n3"
@@ -111,7 +122,7 @@ def test_misrouted_snapshot_delivery_endpoint_is_rejected_before_install() -> No
     assert follower.current_term == 0
     assert follower.log_base_index == 0
     assert store.latest("n3") is None
-    rejected = [record for record in sim.trace if record.kind == "raft-snapshot-envelope-rejected"]
+    rejected = _rejections(sim)
     assert len(rejected) == 1
     assert rejected[0].details["reason"] == "delivery-endpoint-mismatch"
     assert rejected[0].details["expected_delivery_dst"] == transport.endpoint("n3")
