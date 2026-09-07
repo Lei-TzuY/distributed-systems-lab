@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .membership import ReconfigurableRaftCluster
+from .membership import ReconfigurableRaftCluster, VotingConfiguration
 from .replication import LeaderReplicator
 
 
@@ -10,7 +10,9 @@ class MembershipAwareLeaderReplicator(LeaderReplicator):
     Reconfigurable clusters may pre-provision learners that must not inflate the
     commit quorum. During joint consensus, a committed index must be acknowledged by
     independent majorities of both the old and new voter sets, matching the election
-    quorum rule used by ``ReconfigurableRaftCluster``.
+    quorum rule used by ``ReconfigurableRaftCluster``. A pending joint-consensus entry
+    is itself committed against the proposed joint configuration so the new voter
+    majority has the transition before that configuration becomes active.
     """
 
     def advance_commit_index(self) -> int:
@@ -34,7 +36,8 @@ class MembershipAwareLeaderReplicator(LeaderReplicator):
                     if progress.match_index >= index
                 ),
             }
-            if not cluster.voting_configuration.has_quorum(acknowledged):
+            configuration, quorum_mode = self._commit_configuration(index)
+            if not configuration.has_quorum(acknowledged):
                 continue
 
             self._commit_index = index
@@ -47,16 +50,24 @@ class MembershipAwareLeaderReplicator(LeaderReplicator):
                 previous_commit_index=previous,
                 commit_index=index,
                 replicas=len(acknowledged),
-                acknowledged_voters=tuple(
-                    sorted(acknowledged & cluster.voting_configuration.voters)
-                ),
-                quorum_mode=(
-                    "joint" if cluster.voting_configuration.is_joint else "stable"
-                ),
+                acknowledged_voters=tuple(sorted(acknowledged & configuration.voters)),
+                quorum_mode=quorum_mode,
             )
             break
 
         return self._commit_index
+
+    def _commit_configuration(self, index: int) -> tuple[VotingConfiguration, str]:
+        from .membership_log import JointConsensusCommand
+
+        cluster = self.leader.cluster
+        assert isinstance(cluster, ReconfigurableRaftCluster)
+        active = cluster.voting_configuration
+        command = self.leader.log_view.entry_at(index).command
+        if not active.is_joint and isinstance(command, JointConsensusCommand):
+            proposed = VotingConfiguration(active.old_voters, frozenset(command.new_voters))
+            return proposed, "joint-proposal"
+        return active, "joint" if active.is_joint else "stable"
 
     def _persist_committed_membership(self, commit_index: int) -> None:
         """Durably record any membership command covered by this commit advance.
