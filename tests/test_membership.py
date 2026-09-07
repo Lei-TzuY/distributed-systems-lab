@@ -7,7 +7,7 @@ from distlab.membership import (
 )
 from distlab.raft import RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
-from distlab.simulator import Simulator
+from distlab.simulator import FaultAction, FaultPlan, FaultRule, Simulator
 
 
 def _cluster_with_learners() -> tuple[Simulator, ReconfigurableRaftCluster]:
@@ -81,6 +81,54 @@ def test_finalize_new_configuration_fences_removed_voters() -> None:
     ][-1]
     assert vote.details["granted"] is False
     assert vote.details["candidate_eligible"] is False
+
+
+def test_removed_candidate_cannot_win_from_delayed_vote_responses() -> None:
+    sim = Simulator(
+        fault_plan=FaultPlan(
+            rules=(
+                FaultRule(FaultAction.DELAY, src="n2", dst="n1", extra_delay=10),
+                FaultRule(FaultAction.DELAY, src="n3", dst="n2", extra_delay=10),
+                FaultRule(FaultAction.DELAY, src="n4", dst="n2", extra_delay=10),
+            )
+        )
+    )
+    cluster = ReconfigurableRaftCluster(
+        sim,
+        ("n1", "n2", "n3", "n4", "n5"),
+        voters=("n1", "n2", "n3", "n4"),
+    )
+    harness = RaftSafetyHarness(cluster)
+
+    cluster.node("n1").start_election()
+    sim.run()
+    assert cluster.node("n1").role is RaftRole.LEADER
+    harness.checkpoint()
+
+    cluster.node("n2").start_election()
+    sim.run(max_events=2)
+    assert cluster.node("n2").role is RaftRole.CANDIDATE
+    assert cluster.node("n3").voted_for == "n2"
+    assert cluster.node("n4").voted_for == "n2"
+
+    cluster.begin_joint_consensus("n1", ("n1", "n3", "n4"))
+    cluster.finalize_membership("n1")
+    assert not cluster.is_voter("n2")
+
+    sim.run()
+
+    assert cluster.node("n2").role is RaftRole.FOLLOWER
+    assert cluster.node("n2").votes_received == frozenset()
+    assert cluster.leaders_by_term.get(2) is None
+    aborts = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-election-abort"
+        and record.details["node"] == "n2"
+        and record.details["term"] == 2
+    ]
+    assert aborts[-1].details["reason"] == "candidate-not-voter"
+    harness.checkpoint()
 
 
 def test_membership_transition_requires_current_leader() -> None:
