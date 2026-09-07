@@ -127,7 +127,9 @@ class ReconfigurableRaftCluster(RaftCluster):
         if not proposed <= frozenset(self.node_ids):
             raise ValueError("new voters must be pre-provisioned cluster nodes")
         old = self._voting_configuration.old_voters
-        self._voting_configuration = VotingConfiguration(old, proposed)
+        self._install_voting_configuration(
+            VotingConfiguration(old, proposed), reason="membership-joint"
+        )
         self.sim._record(
             "raft-membership-joint",
             leader=leader_id,
@@ -145,7 +147,7 @@ class ReconfigurableRaftCluster(RaftCluster):
             raise MembershipChangeError("current leader must belong to the new voter configuration")
         old = configuration.old_voters
         new = configuration.new_voters
-        self._voting_configuration = VotingConfiguration(new)
+        self._install_voting_configuration(VotingConfiguration(new), reason="membership-stable")
         self.sim._record(
             "raft-membership-stable",
             leader=leader_id,
@@ -160,6 +162,17 @@ class ReconfigurableRaftCluster(RaftCluster):
     def has_election_quorum(self, votes: frozenset[str] | set[str]) -> bool:
         return self._voting_configuration.has_quorum(votes)
 
+    def _install_voting_configuration(
+        self, configuration: VotingConfiguration, *, reason: str
+    ) -> None:
+        previous_voters = self._voting_configuration.voters
+        self._voting_configuration = configuration
+        current_voters = configuration.voters
+        for node_id in sorted(previous_voters - current_voters):
+            self.node(node_id).disable_election_timeout(reason=f"{reason}-voter-removed")
+        for node_id in sorted(current_voters - previous_voters):
+            self.node(node_id).reset_election_timeout(reason=f"{reason}-voter-added")
+
     def _require_transition_leader(self, leader_id: str) -> None:
         if leader_id not in self.nodes:
             raise MembershipChangeError(f"unknown membership-change leader {leader_id!r}")
@@ -170,6 +183,31 @@ class ReconfigurableRaftCluster(RaftCluster):
 
 class ReconfigurableRaftNode(RaftNode):
     cluster: ReconfigurableRaftCluster
+
+    def reset_election_timeout(self, *, reason: str) -> None:
+        if not self.cluster.is_voter(self.node_id):
+            self.disable_election_timeout(reason=f"{reason}-non-voter")
+            return
+        super().reset_election_timeout(reason=reason)
+
+    def disable_election_timeout(self, *, reason: str) -> None:
+        self._election_timer_generation += 1
+        volatile = self.sim.volatile_state[self.node_id]
+        if self.role is RaftRole.CANDIDATE:
+            volatile["role"] = RaftRole.FOLLOWER.value
+            volatile["votes_received"] = set()
+            self.sim._record(
+                "raft-election-abort",
+                node=self.node_id,
+                term=self.current_term,
+                reason="candidate-not-voter",
+            )
+        self.sim._record(
+            "raft-election-timeout-disabled",
+            node=self.node_id,
+            generation=self._election_timer_generation,
+            reason=reason,
+        )
 
     def start_election(self) -> None:
         if not self.sim.is_alive(self.node_id):
