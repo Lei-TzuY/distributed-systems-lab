@@ -9,6 +9,7 @@ from distlab.leadership_transfer import (
 from distlab.membership import ReconfigurableRaftCluster
 from distlab.raft import LogEntry, RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
+from distlab.replication import LeaderReplicator
 from distlab.simulator import Simulator
 
 
@@ -98,6 +99,46 @@ def test_transfer_rejects_crashed_target_before_mutating_term() -> None:
     assert cluster.node("n1").current_term == source_term
     assert cluster.node("n1").role is RaftRole.LEADER
     assert not any(record.kind == "raft-leadership-transfer-start" for record in sim.trace)
+
+
+def test_transfer_aborts_if_source_loses_leadership_during_catchup(monkeypatch) -> None:
+    sim, cluster = _lagging_transferee_cluster()
+    source = cluster.node("n1")
+    target = cluster.node("n2")
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+
+    def retire_source_during_catchup(
+        replicator: LeaderReplicator,
+        peer: str,
+        *,
+        max_attempts: int,
+    ) -> bool:
+        assert replicator.leader is source
+        assert peer == "n2"
+        assert max_attempts == 4
+        cluster.node("n3").start_election()
+        sim.run()
+        assert source.role is RaftRole.FOLLOWER
+        return True
+
+    monkeypatch.setattr(LeaderReplicator, "recover_peer", retire_source_during_catchup)
+
+    with pytest.raises(LeadershipTransferIncomplete, match="source leader lost leadership"):
+        LeadershipTransfer(source).transfer("n2", max_replication_attempts=4)
+
+    assert source.role is RaftRole.FOLLOWER
+    assert cluster.node("n3").role is RaftRole.LEADER
+    assert target.current_term == 4
+    assert target.role is RaftRole.FOLLOWER
+    assert not any(record.kind == "raft-leadership-transfer-ready" for record in sim.trace)
+    assert not any(record.kind == "raft-leadership-transfer-complete" for record in sim.trace)
+    failures = [
+        record for record in sim.trace if record.kind == "raft-leadership-transfer-failed"
+    ]
+    assert failures[-1].details["stage"] == "catch-up"
+    assert failures[-1].details["reason"] == "source leader lost leadership during catch-up"
+    harness.checkpoint()
 
 
 def test_joint_transfer_rejects_outgoing_only_voter_before_side_effects() -> None:
