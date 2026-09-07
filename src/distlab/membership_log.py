@@ -236,7 +236,7 @@ class ReplicatedMembershipTransition:
 
     Both configuration changes are appended as ordinary durable current-term log
     entries. Stable-to-joint activation waits for the proposal to commit under the
-    old stable quorum. Joint-to-stable finalization waits for its entry to commit
+    proposed joint quorum. Joint-to-stable finalization waits for its entry to commit
     under the active joint quorum. Committed membership watermarks make those
     decisions reconstructible after crash/restart or cluster recreation.
     """
@@ -398,7 +398,9 @@ class ReplicatedMembershipTransition:
         if apply_committed(replicator):
             return True
 
-        voters = self.cluster.voting_configuration.voters
+        voters = set(self.cluster.voting_configuration.voters)
+        if isinstance(command, JointConsensusCommand):
+            voters.update(command.new_voters)
         for peer in sorted(voters - {self.leader.node_id}):
             if not self.sim.is_alive(peer):
                 continue
