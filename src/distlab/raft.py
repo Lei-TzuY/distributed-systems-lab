@@ -392,6 +392,8 @@ class RaftNode:
     def handle_message(self, sim: Simulator, message: Message) -> None:
         self._reset_volatile_defaults()
         payload = message.payload
+        if self._reject_invalid_envelope(message, payload):
+            return
         if isinstance(payload, _ElectionTimeout):
             self._handle_election_timeout(payload)
         elif isinstance(payload, RequestVote):
@@ -404,6 +406,36 @@ class RaftNode:
             self._handle_append_entries_response(payload)
         else:
             raise TypeError(f"unsupported Raft message {type(payload).__name__}")
+
+    def _reject_invalid_envelope(self, message: Message, payload: object) -> bool:
+        reason: str | None = None
+        claimed_src: str | None = None
+        if message.dst != self.node_id:
+            reason = "destination-identity-mismatch"
+        elif isinstance(payload, RequestVote):
+            claimed_src = payload.candidate_id
+        elif isinstance(payload, RequestVoteResponse):
+            claimed_src = payload.voter_id
+        elif isinstance(payload, AppendEntries):
+            claimed_src = payload.leader_id
+        elif isinstance(payload, AppendEntriesResponse):
+            claimed_src = payload.follower_id
+
+        if reason is None and claimed_src is not None and message.src != claimed_src:
+            reason = "source-identity-mismatch"
+        if reason is None:
+            return False
+
+        self.sim._record(
+            "raft-envelope-rejected",
+            node=self.node_id,
+            src=message.src,
+            dst=message.dst,
+            payload_type=type(payload).__name__,
+            claimed_src=claimed_src,
+            reason=reason,
+        )
+        return True
 
     def _handle_election_timeout(self, timeout: _ElectionTimeout) -> None:
         if timeout.generation != self._election_timer_generation:
