@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .membership import ReconfigurableRaftCluster, VotingConfiguration
+from .membership import MembershipChangeError, ReconfigurableRaftCluster, VotingConfiguration
 from .replication import LeaderReplicator
 
 
@@ -59,23 +59,53 @@ class MembershipAwareLeaderReplicator(LeaderReplicator):
         return self._commit_index
 
     def _commit_configuration(self, index: int) -> tuple[VotingConfiguration, str]:
-        from .membership_log import JointConsensusCommand
+        from .membership_log import JointConsensusCommand, StableConsensusCommand
 
         cluster = self.leader.cluster
         assert isinstance(cluster, ReconfigurableRaftCluster)
         active = cluster.voting_configuration
-        if not active.is_joint:
-            log = self.leader.log_view
-            first_uncommitted = max(self._commit_index + 1, log.first_retained_index)
-            for prefix_index in range(first_uncommitted, index + 1):
-                command = log.entry_at(prefix_index).command
-                if isinstance(command, JointConsensusCommand):
-                    proposed = VotingConfiguration(
-                        active.old_voters,
-                        frozenset(command.new_voters),
-                    )
-                    return proposed, "joint-proposal"
-        return active, "joint" if active.is_joint else "stable"
+        log = self.leader.log_view
+        first_uncommitted = max(self._commit_index + 1, log.first_retained_index)
+        membership_commands = [
+            log.entry_at(prefix_index).command
+            for prefix_index in range(first_uncommitted, index + 1)
+            if isinstance(
+                log.entry_at(prefix_index).command,
+                (JointConsensusCommand, StableConsensusCommand),
+            )
+        ]
+
+        if not membership_commands:
+            return active, "joint" if active.is_joint else "stable"
+        if len(membership_commands) > 1:
+            raise MembershipChangeError(
+                "commit candidate covers multiple uncommitted membership commands"
+            )
+
+        command = membership_commands[0]
+        node_ids = frozenset(cluster.node_ids)
+        if isinstance(command, JointConsensusCommand):
+            if active.is_joint:
+                raise MembershipChangeError(
+                    "cannot commit a second joint configuration while joint consensus is active"
+                )
+            new_voters = frozenset(command.new_voters)
+            if not new_voters <= node_ids:
+                raise MembershipChangeError("joint membership proposal references unknown nodes")
+            return VotingConfiguration(active.old_voters, new_voters), "joint-proposal"
+
+        if active.new_voters is None:
+            raise MembershipChangeError(
+                "cannot commit stable membership without active joint consensus"
+            )
+        voters = frozenset(command.voters)
+        if not voters <= node_ids:
+            raise MembershipChangeError("stable membership proposal references unknown nodes")
+        if voters != active.new_voters:
+            raise MembershipChangeError(
+                "stable membership proposal does not match active joint new-voter set"
+            )
+        return active, "joint-finalize"
 
     def _persist_committed_membership(self, commit_index: int) -> None:
         """Durably record any membership command covered by this commit advance.
