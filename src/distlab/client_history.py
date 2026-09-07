@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .kv import ClientRequest, Delete, Put, ReplicatedKV
+from .kv import ClientRequest, ClientRequestConflict, Delete, Put, ReplicatedKV
 from .linearizability import Get, OperationHistory
 
 if TYPE_CHECKING:
@@ -75,9 +75,15 @@ class KVClientHistory:
         request = self._pending_writes.get(operation_id)
         if request is None:
             raise ValueError(f"unknown pending write {operation_id!r}")
-        if not self.kv.has_applied_request(node_id, request.client_id, request.request_id):
+        applied = self.kv.client_requests(node_id).get((request.client_id, request.request_id))
+        if applied is None:
             raise RuntimeError(
                 "cannot complete a client write before the target replica applied its request"
+            )
+        if applied != request.operation:
+            raise ClientRequestConflict(
+                "cannot complete a client write from conflicting applied request identity: "
+                f"client={request.client_id!r}, request_id={request.request_id}"
             )
 
         self.history.respond(operation_id)
