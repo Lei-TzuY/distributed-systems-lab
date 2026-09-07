@@ -9,8 +9,8 @@ Membership changes operate over pre-provisioned transport nodes. The initial sta
 `ReplicatedMembershipTransition` makes the first transition boundary durable instead of mutating quorum state immediately:
 
 1. the current leader appends an immutable `JointConsensusCommand` as a normal current-term Raft log entry;
-2. while that entry is uncommitted, the existing stable voter configuration remains authoritative;
-3. `MembershipAwareLeaderReplicator` replicates and commits the entry using the current configuration;
+2. while that entry is uncommitted, the existing stable voter configuration remains authoritative for elections and live membership state;
+3. commit of the joint proposal, or of any later entry whose commit would cover it, requires independent majorities of the current and proposed new voter sets;
 4. only after the exact proposal index is committed does the cluster activate joint old/new quorum semantics.
 
 ## Replicated joint-to-stable finalization
@@ -22,7 +22,7 @@ Finalization follows the same commit-before-activation rule:
 3. the finalization entry itself must commit under that joint quorum;
 4. only after the exact finalization index commits does the cluster install the new stable voter set and fence removed voters.
 
-Only one membership command may be pending at a time. A stale or replaced leader cannot apply a pending command, and finalization is rejected unless the leader belongs to the new voter set. Proposal, commit, and finalization events are recorded in the deterministic trace.
+Only one membership command may be pending at a time. Commit advancement fails closed before changing `commit_index` or durable membership watermarks if a candidate covers multiple uncommitted membership commands, references unknown nodes, starts a second joint configuration, finalizes without active joint consensus, or finalizes to a voter set other than the active joint new-voter set. A stale or replaced leader cannot apply a pending command, and finalization is rejected unless the leader belongs to the new voter set. Proposal, commit, and finalization events are recorded in the deterministic trace.
 
 ## Restart and snapshot recovery
 
