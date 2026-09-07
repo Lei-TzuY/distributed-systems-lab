@@ -11,7 +11,7 @@ from distlab.membership_log import (
     StableConsensusCommand,
 )
 from distlab.membership_replication import MembershipAwareLeaderReplicator
-from distlab.raft import RaftRole
+from distlab.raft import LogEntry, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
 
@@ -113,6 +113,38 @@ def test_joint_membership_commit_requires_proposed_new_voter_majority() -> None:
         for record in recovered_sim.trace
     )
     RaftSafetyHarness(recovered).checkpoint()
+
+
+def test_later_entry_cannot_commit_over_pending_joint_without_new_majority() -> None:
+    sim, cluster = _cluster()
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+    leader = cluster.node("n1")
+    transition = ReplicatedMembershipTransition(leader)
+    joint_index = transition.propose_joint(("n1", "n4", "n5"))
+    later_entry = LogEntry(term=leader.current_term, command=("put", "after-joint", "v"))
+    sim.persistent_state[leader.node_id]["log"] = (*leader.log, later_entry)
+    later_index = leader.log_view.last_index
+    assert later_index == joint_index + 1
+    replicator = MembershipAwareLeaderReplicator(leader)
+
+    assert replicator.replicate("n2", max_attempts=2)
+    assert replicator.commit_index < joint_index
+    assert leader.commit_index < joint_index
+    assert max(
+        int(sim.persistent_state[node_id].get("membership_commit_index", 0))
+        for node_id in NODE_IDS
+    ) < joint_index
+    harness.checkpoint()
+
+    assert replicator.replicate("n4", max_attempts=2)
+    assert replicator.commit_index == later_index
+    assert leader.commit_index == later_index
+    assert max(
+        int(sim.persistent_state[node_id].get("membership_commit_index", 0))
+        for node_id in NODE_IDS
+    ) == joint_index
+    harness.checkpoint()
 
 
 def test_stable_finalization_waits_for_joint_quorum_commit() -> None:
