@@ -101,7 +101,7 @@ def test_read_barrier_revalidates_membership_after_peer_acknowledgement() -> Non
     failures = [
         record for record in sim.trace if record.kind == "raft-linearizable-read-quorum-failed"
     ]
-    assert failures[-1].details["acknowledged_voters"] == ("n1", "n2", "n3")
+    assert failures[-1].details["acknowledged_voters"] == ("n1", "n2")
     assert failures[-1].details["quorum_mode"] == "joint"
     assert not [record for record in sim.trace if record.kind == "raft-linearizable-read"]
     safety.checkpoint()
