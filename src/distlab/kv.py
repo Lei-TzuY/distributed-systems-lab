@@ -187,6 +187,7 @@ class ReplicatedKV:
         client_id: str | None = None
         request_id: int | None = None
         duplicate = False
+        stale = False
         operation: object = command
         if isinstance(command, ClientRequest):
             client_id = command.client_id
@@ -201,10 +202,21 @@ class ReplicatedKV:
                     )
                 duplicate = True
             else:
-                self._requests[node_id][identity] = command.operation
+                latest_request_id = max(
+                    (
+                        seen_request_id
+                        for (owner, seen_request_id) in self._requests[node_id]
+                        if owner == client_id
+                    ),
+                    default=-1,
+                )
+                if request_id < latest_request_id:
+                    stale = True
+                else:
+                    self._requests[node_id][identity] = command.operation
             operation = command.operation
 
-        if not duplicate:
+        if not duplicate and not stale:
             self._execute_operation(node_id, operation)
 
         if emit_trace:
@@ -232,6 +244,7 @@ class ReplicatedKV:
                 client_id=client_id,
                 request_id=request_id,
                 duplicate=duplicate,
+                stale=stale,
             )
 
     def _execute_operation(self, node_id: str, operation: object) -> None:
