@@ -130,7 +130,11 @@ class SnapshotTransport:
 
         expected_delivery_dst = self.endpoint(expected_dst)
         reason: str | None = None
-        if message.src != expected_src:
+        if expected_src not in self.cluster.nodes:
+            reason = "unknown-source-principal"
+        elif expected_dst not in self.cluster.nodes:
+            reason = "unknown-destination-principal"
+        elif message.src != expected_src:
             reason = "source-identity-mismatch"
         elif message.dst != expected_dst:
             reason = "destination-identity-mismatch"
