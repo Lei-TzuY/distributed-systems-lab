@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .leadership_transfer_transport import LeadershipTransferTransport
 from .membership import ReconfigurableRaftCluster
 from .membership_replication import MembershipAwareLeaderReplicator
 from .raft import RaftNode, RaftRole
@@ -40,9 +41,10 @@ class LeadershipTransferResult:
 class LeadershipTransfer:
     """Move leadership to a caught-up peer through a deterministic Raft election.
 
-    This controller deliberately reuses the normal replication and RequestVote paths:
+    This controller deliberately reuses normal replication and transport paths:
     the requested transferee is first brought to the leader's complete log/commit
-    prefix, then starts the next-term election. No role or term is assigned directly.
+    prefix, then receives a TimeoutNow-style trigger over the deterministic network.
+    No role or term is assigned directly.
     """
 
     def __init__(
@@ -54,6 +56,7 @@ class LeadershipTransfer:
         self.leader = leader
         self.sim = leader.sim
         self.snapshot_transport = snapshot_transport
+        self.transfer_transport = LeadershipTransferTransport.for_cluster(leader.cluster)
 
     def transfer(
         self,
@@ -165,7 +168,11 @@ class LeadershipTransfer:
             commit_index=target.commit_index,
         )
 
-        target.start_election()
+        self.transfer_transport.send_timeout_now(
+            self.leader.node_id,
+            transferee_id,
+            term=previous_term,
+        )
         event_budget = max(4, len(cluster.node_ids) * 4)
         for _ in range(event_budget):
             if self._transfer_elected(target, previous_term):
