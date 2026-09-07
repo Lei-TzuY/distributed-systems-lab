@@ -65,3 +65,32 @@ def test_delivery_destination_mismatch_is_rejected_before_term_advance() -> None
     assert rejected[0].details["dst"] == "n3"
     assert rejected[0].details["reason"] == "destination-identity-mismatch"
     RaftSafetyHarness(cluster).checkpoint()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        RequestVote(term=11, candidate_id="outsider"),
+        RequestVoteResponse(term=11, voter_id="outsider", vote_granted=True),
+        AppendEntries(term=11, leader_id="outsider"),
+        AppendEntriesResponse(term=11, follower_id="outsider", success=True, match_index=0),
+    ],
+)
+def test_unknown_source_principal_cannot_mutate_raft_state(payload: object) -> None:
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    follower = cluster.node("n2")
+
+    sim.send("outsider", "n2", payload)
+    sim.run()
+
+    assert follower.current_term == 0
+    assert follower.voted_for is None
+    assert follower.log == ()
+    rejected = [record for record in sim.trace if record.kind == "raft-envelope-rejected"]
+    assert len(rejected) == 1
+    assert rejected[0].details["node"] == "n2"
+    assert rejected[0].details["src"] == "outsider"
+    assert rejected[0].details["claimed_src"] == "outsider"
+    assert rejected[0].details["reason"] == "unknown-source-principal"
+    RaftSafetyHarness(cluster).checkpoint()

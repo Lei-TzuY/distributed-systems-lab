@@ -421,6 +421,10 @@ class RaftNode:
         elif isinstance(payload, AppendEntriesResponse):
             claimed_src = payload.follower_id
 
+        if reason is None and claimed_src is not None and claimed_src not in self.cluster.nodes:
+            reason = "unknown-source-principal"
+        if reason is None and message.dst not in self.cluster.nodes:
+            reason = "unknown-destination-principal"
         if reason is None and claimed_src is not None and message.src != claimed_src:
             reason = "source-identity-mismatch"
         if reason is None:
