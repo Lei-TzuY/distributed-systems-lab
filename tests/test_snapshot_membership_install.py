@@ -2,10 +2,11 @@ import pytest
 
 from distlab.kv import ReplicatedKV
 from distlab.membership import ReconfigurableRaftCluster, VotingConfiguration
+from distlab.raft import RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
 from distlab.snapshot import KVSnapshot, KVSnapshotStore, SnapshotVotingConfiguration
-from distlab.snapshot_transport import SnapshotTransport
+from distlab.snapshot_transport import InstallSnapshotResponse, SnapshotTransport
 
 
 def _snapshot(
@@ -158,4 +159,52 @@ def test_delayed_snapshot_from_removed_voter_is_rejected_before_term_adoption() 
     assert rejected[0].details["reason"] == "leader-not-voter"
     assert responses[-1].details["success"] is False
     assert responses[-1].details["term"] == 0
+    safety.checkpoint()
+
+
+def test_delayed_snapshot_response_from_removed_voter_cannot_advance_term() -> None:
+    sim = Simulator()
+    cluster = ReconfigurableRaftCluster(sim, ("n1", "n2"), voters=("n1", "n2"))
+    store = KVSnapshotStore(cluster, ReplicatedKV(cluster))
+    transport = SnapshotTransport(store)
+    safety = RaftSafetyHarness(cluster)
+    leader = cluster.node("n1")
+
+    leader.start_election()
+    sim.run()
+    assert leader.current_term == 1
+    assert leader.role is RaftRole.LEADER
+    safety.checkpoint()
+
+    sim.send(
+        "n2",
+        "n1",
+        InstallSnapshotResponse(
+            term=5,
+            leader_id="n1",
+            follower_id="n2",
+            success=False,
+            last_included_index=0,
+            requested_last_included_index=0,
+            request_id=17,
+        ),
+        delivery_dst=transport.endpoint("n1"),
+    )
+    cluster._install_voting_configuration(
+        VotingConfiguration(frozenset({"n1"})),
+        reason="test-membership-stable",
+    )
+    assert sim.run(max_events=1) == 1
+
+    assert leader.current_term == 1
+    assert leader.role is RaftRole.LEADER
+    rejected = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-install-snapshot-response-rejected"
+        and record.details.get("request_id") == 17
+    ]
+    assert len(rejected) == 1
+    assert rejected[0].details["reason"] == "follower-not-voter"
+    assert rejected[0].details["current_term"] == 1
     safety.checkpoint()
