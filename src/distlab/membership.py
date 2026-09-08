@@ -333,3 +333,20 @@ class ReconfigurableRaftNode(RaftNode):
         votes.add(response.voter_id)
         if self.cluster.has_election_quorum(votes):
             self._become_leader(response.term)
+
+    def _handle_append_entries_response(self, response: AppendEntriesResponse) -> None:
+        follower_eligible = self.cluster.is_voter(response.follower_id)
+        recipient_eligible = self.cluster.is_voter(self.node_id)
+        if not follower_eligible or not recipient_eligible:
+            self.sim._record(
+                "raft-append-response-rejected",
+                node=self.node_id,
+                follower=response.follower_id,
+                term=response.term,
+                current_term=self.current_term,
+                reason=(
+                    "follower-not-voter" if not follower_eligible else "recipient-not-voter"
+                ),
+            )
+            return
+        super()._handle_append_entries_response(response)
