@@ -21,6 +21,8 @@ class InstallSnapshotRequest:
             raise ValueError("term must be non-negative")
         if not self.leader_id or not self.follower_id:
             raise ValueError("snapshot endpoints must be non-empty")
+        if self.leader_id == self.follower_id:
+            raise ValueError("snapshot endpoints must be distinct")
         if self.request_id < 0:
             raise ValueError("request_id must be non-negative")
 
@@ -38,6 +40,10 @@ class InstallSnapshotResponse:
     def __post_init__(self) -> None:
         if self.term < 0:
             raise ValueError("term must be non-negative")
+        if not self.leader_id or not self.follower_id:
+            raise ValueError("snapshot endpoints must be non-empty")
+        if self.leader_id == self.follower_id:
+            raise ValueError("snapshot endpoints must be distinct")
         if self.last_included_index < 0:
             raise ValueError("last_included_index must be non-negative")
         if self.requested_last_included_index < 0:
@@ -81,6 +87,8 @@ class SnapshotTransport:
     ) -> None:
         if leader_id not in self.cluster.nodes or follower_id not in self.cluster.nodes:
             raise ValueError("snapshot transport requires known Raft nodes")
+        if leader_id == follower_id:
+            raise ValueError("snapshot transport requires distinct Raft nodes")
         if request_id < 0:
             raise ValueError("request_id must be non-negative")
         self.sim._record(
