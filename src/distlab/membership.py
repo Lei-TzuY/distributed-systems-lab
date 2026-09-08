@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .raft import RaftCluster, RaftNode, RaftRole, RequestVote, RequestVoteResponse
+from .raft import (
+    AppendEntries,
+    AppendEntriesResponse,
+    RaftCluster,
+    RaftNode,
+    RaftRole,
+    RequestVote,
+    RequestVoteResponse,
+)
 from .simulator import Simulator
 
 
@@ -276,6 +284,29 @@ class ReconfigurableRaftNode(RaftNode):
             self.node_id,
             src,
             RequestVoteResponse(term=self.current_term, voter_id=self.node_id, vote_granted=grant),
+        )
+
+    def _handle_append_entries(self, src: str, request: AppendEntries) -> None:
+        if self.cluster.is_voter(request.leader_id):
+            super()._handle_append_entries(src, request)
+            return
+        self.sim._record(
+            "raft-append-entries-rejected",
+            follower=self.node_id,
+            leader=request.leader_id,
+            term=request.term,
+            current_term=self.current_term,
+            reason="leader-not-voter",
+        )
+        self.sim.send(
+            self.node_id,
+            src,
+            AppendEntriesResponse(
+                term=self.current_term,
+                follower_id=self.node_id,
+                success=False,
+                match_index=0,
+            ),
         )
 
     def _handle_request_vote_response(self, response: RequestVoteResponse) -> None:
