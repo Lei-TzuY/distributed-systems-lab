@@ -53,6 +53,7 @@ def test_joint_consensus_requires_majority_of_old_and_new_voters() -> None:
 
 def test_finalize_new_configuration_fences_removed_voters() -> None:
     sim, cluster = _cluster_with_learners()
+    harness = RaftSafetyHarness(cluster)
     cluster.begin_joint_consensus("n1", ("n3", "n4", "n5"))
 
     cluster.node("n3").start_election()
@@ -72,6 +73,7 @@ def test_finalize_new_configuration_fences_removed_voters() -> None:
 
     sim.send("n1", "n4", RequestVote(term=source_term + 1, candidate_id="n1"))
     sim.run(max_events=1)
+    assert cluster.node("n4").current_term == source_term
     vote = [
         record
         for record in sim.trace
@@ -81,6 +83,8 @@ def test_finalize_new_configuration_fences_removed_voters() -> None:
     ][-1]
     assert vote.details["granted"] is False
     assert vote.details["candidate_eligible"] is False
+    assert vote.details["term"] == source_term + 1
+    harness.checkpoint()
 
 
 def test_initial_learner_election_timeout_is_disabled() -> None:
