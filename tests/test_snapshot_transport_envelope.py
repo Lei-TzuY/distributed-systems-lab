@@ -1,3 +1,5 @@
+import pytest
+
 from distlab.kv import ReplicatedKV
 from distlab.raft import RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
@@ -126,4 +128,47 @@ def test_misrouted_snapshot_delivery_endpoint_is_rejected_before_install() -> No
     assert len(rejected) == 1
     assert rejected[0].details["reason"] == "delivery-endpoint-mismatch"
     assert rejected[0].details["expected_delivery_dst"] == transport.endpoint("n3")
+    RaftSafetyHarness(cluster).checkpoint()
+
+
+def test_snapshot_message_types_reject_self_directed_endpoints() -> None:
+    with pytest.raises(ValueError, match="snapshot endpoints must be distinct"):
+        InstallSnapshotRequest(
+            term=1,
+            leader_id="n1",
+            follower_id="n1",
+            snapshot=_snapshot(),
+        )
+    with pytest.raises(ValueError, match="snapshot endpoints must be distinct"):
+        InstallSnapshotResponse(
+            term=1,
+            leader_id="n1",
+            follower_id="n1",
+            success=True,
+            last_included_index=1,
+            requested_last_included_index=1,
+        )
+
+
+def test_snapshot_transport_rejects_self_target_before_state_or_trace_mutation() -> None:
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    kv, store, transport = _transport(sim, cluster)
+    node = cluster.node("n1")
+    term_before = node.current_term
+    trace_before = tuple(sim.trace)
+
+    with pytest.raises(ValueError, match="snapshot transport requires distinct Raft nodes"):
+        transport.send_install_snapshot(
+            leader_id="n1",
+            follower_id="n1",
+            term=term_before,
+            snapshot=_snapshot(),
+        )
+
+    assert node.current_term == term_before
+    assert node.log_base_index == 0
+    assert store.latest("n1") is None
+    assert kv.snapshot("n1") == {}
+    assert tuple(sim.trace) == trace_before
     RaftSafetyHarness(cluster).checkpoint()
