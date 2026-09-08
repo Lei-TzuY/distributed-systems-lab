@@ -254,6 +254,26 @@ class SnapshotTransport:
         leader = self.cluster.node(response.leader_id)
         if not self.sim.is_alive(response.leader_id):
             return
+        if response.term > leader.current_term and isinstance(
+            self.cluster, ReconfigurableRaftCluster
+        ):
+            follower_eligible = self.cluster.is_voter(response.follower_id)
+            recipient_eligible = self.cluster.is_voter(response.leader_id)
+            if not follower_eligible or not recipient_eligible:
+                self.sim._record(
+                    "raft-install-snapshot-response-rejected",
+                    leader=response.leader_id,
+                    follower=response.follower_id,
+                    term=response.term,
+                    current_term=leader.current_term,
+                    reason=(
+                        "follower-not-voter"
+                        if not follower_eligible
+                        else "recipient-not-voter"
+                    ),
+                    request_id=response.request_id,
+                )
+                return
         if response.term > leader.current_term:
             leader._advance_term(response.term)
         self.sim._record(
