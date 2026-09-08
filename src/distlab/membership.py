@@ -61,7 +61,14 @@ def _has_majority(voters: frozenset[str], votes: frozenset[str]) -> bool:
 
 
 class ReconfigurableRaftCluster(RaftCluster):
-    """Raft cluster whose elections obey durable stable/joint configurations."""
+    """Raft cluster whose elections obey durable stable/joint configurations.
+
+    All ``node_ids`` are pre-provisioned transport participants. ``voters`` selects
+    the bootstrap stable voting set; other nodes are learners until a committed
+    configuration transition includes them. If persistent state already contains
+    committed membership history, construction recovers the active configuration
+    before any election timer is armed.
+    """
 
     def __init__(
         self,
