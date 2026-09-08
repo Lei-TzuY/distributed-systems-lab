@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .membership import ReconfigurableRaftCluster
 from .raft import RaftRole
 from .simulator import Message, Simulator
 from .snapshot import KVSnapshot, KVSnapshotStore
@@ -168,7 +169,23 @@ class SnapshotTransport:
             )
             return
 
-        if request.term < follower.current_term:
+        leader_eligible = not isinstance(
+            self.cluster, ReconfigurableRaftCluster
+        ) or self.cluster.is_voter(request.leader_id)
+        if not leader_eligible:
+            success = False
+            installed_index = follower.log_base_index
+            self.sim._record(
+                "raft-install-snapshot-rejected",
+                leader=request.leader_id,
+                follower=request.follower_id,
+                term=request.term,
+                incoming_index=request.snapshot.last_included_index,
+                installed_index=installed_index,
+                reason="leader-not-voter",
+                request_id=request.request_id,
+            )
+        elif request.term < follower.current_term:
             success = False
             installed_index = follower.log_base_index
         else:
