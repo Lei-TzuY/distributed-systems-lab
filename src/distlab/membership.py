@@ -61,14 +61,7 @@ def _has_majority(voters: frozenset[str], votes: frozenset[str]) -> bool:
 
 
 class ReconfigurableRaftCluster(RaftCluster):
-    """Raft cluster whose elections obey durable stable/joint configurations.
-
-    All ``node_ids`` are pre-provisioned transport participants. ``voters`` selects
-    the bootstrap stable voting set; other nodes are learners until a committed
-    configuration transition includes them. If persistent state already contains
-    committed membership history, construction recovers the active configuration
-    before any election timer is armed.
-    """
+    """Raft cluster whose elections obey durable stable/joint configurations."""
 
     def __init__(
         self,
@@ -310,24 +303,24 @@ class ReconfigurableRaftNode(RaftNode):
         )
 
     def _handle_request_vote_response(self, response: RequestVoteResponse) -> None:
+        voter_eligible = self.cluster.is_voter(response.voter_id)
+        recipient_eligible = self.cluster.is_voter(self.node_id)
+        if not voter_eligible or not recipient_eligible:
+            self.sim._record(
+                "raft-vote-response-rejected",
+                node=self.node_id,
+                voter=response.voter_id,
+                term=response.term,
+                current_term=self.current_term,
+                reason=("voter-not-voter" if not voter_eligible else "recipient-not-voter"),
+            )
+            return
         if response.term > self.current_term:
             self._advance_term(response.term)
             return
         if response.term != self.current_term or self.role is not RaftRole.CANDIDATE:
             return
-        if not self.cluster.is_voter(self.node_id):
-            volatile = self.sim.volatile_state[self.node_id]
-            volatile["role"] = RaftRole.FOLLOWER.value
-            volatile["votes_received"] = set()
-            self._election_timer_generation += 1
-            self.sim._record(
-                "raft-election-abort",
-                node=self.node_id,
-                term=self.current_term,
-                reason="candidate-not-voter",
-            )
-            return
-        if not response.vote_granted or not self.cluster.is_voter(response.voter_id):
+        if not response.vote_granted:
             return
         votes = self.sim.volatile_state[self.node_id].setdefault("votes_received", set())
         votes.add(response.voter_id)
