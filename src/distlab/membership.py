@@ -240,10 +240,10 @@ class ReconfigurableRaftNode(RaftNode):
             self.sim.send(self.node_id, peer, request)
 
     def _handle_request_vote(self, src: str, request: RequestVote) -> None:
-        if request.term > self.current_term:
-            self._advance_term(request.term)
         voter_eligible = self.cluster.is_voter(self.node_id)
         candidate_eligible = self.cluster.is_voter(request.candidate_id)
+        if candidate_eligible and request.term > self.current_term:
+            self._advance_term(request.term)
         log_up_to_date = self._candidate_log_is_up_to_date(request)
         grant = False
         if (
