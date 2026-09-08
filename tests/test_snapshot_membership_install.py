@@ -1,7 +1,7 @@
 import pytest
 
 from distlab.kv import ReplicatedKV
-from distlab.membership import ReconfigurableRaftCluster
+from distlab.membership import ReconfigurableRaftCluster, VotingConfiguration
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
 from distlab.snapshot import KVSnapshot, KVSnapshotStore, SnapshotVotingConfiguration
@@ -115,4 +115,47 @@ def test_transport_returns_failure_for_rejected_membership_snapshot() -> None:
     assert responses[-1].details["last_included_index"] == 0
     assert responses[-1].details["requested_last_included_index"] == 3
     assert responses[-1].details["request_id"] == 7
+    safety.checkpoint()
+
+
+def test_delayed_snapshot_from_removed_voter_is_rejected_before_term_adoption() -> None:
+    sim = Simulator()
+    cluster = ReconfigurableRaftCluster(sim, ("n1", "n2"), voters=("n1", "n2"))
+    store = KVSnapshotStore(cluster, ReplicatedKV(cluster))
+    transport = SnapshotTransport(store)
+    safety = RaftSafetyHarness(cluster)
+    safety.checkpoint()
+
+    transport.send_install_snapshot(
+        leader_id="n2",
+        follower_id="n1",
+        term=5,
+        snapshot=_snapshot(boundary=1, membership_index=0, voters=("n1", "n2")),
+        request_id=11,
+    )
+    cluster._install_voting_configuration(
+        VotingConfiguration(frozenset({"n1"})),
+        reason="test-membership-stable",
+    )
+    sim.run()
+
+    assert cluster.node("n1").current_term == 0
+    assert store.latest("n1") is None
+    assert cluster.node("n1").log_base_index == 0
+    rejected = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-install-snapshot-rejected"
+        and record.details.get("request_id") == 11
+    ]
+    responses = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-install-snapshot-response"
+        and record.details.get("request_id") == 11
+    ]
+    assert len(rejected) == 1
+    assert rejected[0].details["reason"] == "leader-not-voter"
+    assert responses[-1].details["success"] is False
+    assert responses[-1].details["term"] == 0
     safety.checkpoint()
