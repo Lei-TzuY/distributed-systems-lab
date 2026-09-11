@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .membership import ReconfigurableRaftCluster
-from .raft import RaftCluster, RaftRole
+from .raft import RaftCluster, RaftNode, RaftRole
 from .simulator import Message, Simulator
 
 
@@ -166,6 +166,8 @@ class LeadershipTransferTransport:
             or target.commit_index < leader.commit_index
         ):
             reason = "transferee-not-caught-up"
+        elif not self._retained_log_overlap_matches(leader, target):
+            reason = "transferee-log-mismatch"
         elif isinstance(self.cluster, ReconfigurableRaftCluster):
             configuration = self.cluster.voting_configuration
             if not self.cluster.is_voter(request.transferee_id):
@@ -199,3 +201,20 @@ class LeadershipTransferTransport:
             attempt_id=request.attempt_id,
         )
         target.start_election()
+
+    @staticmethod
+    def _retained_log_overlap_matches(leader: RaftNode, target: RaftNode) -> bool:
+        """Verify every log position still retained by both transfer endpoints."""
+
+        leader_log = leader.log_view
+        target_log = target.log_view
+        overlap_boundary = max(leader_log.base_index, target_log.base_index)
+        try:
+            if leader_log.term_at(overlap_boundary) != target_log.term_at(overlap_boundary):
+                return False
+            for index in range(overlap_boundary + 1, leader_log.last_index + 1):
+                if leader_log.entry_at(index) != target_log.entry_at(index):
+                    return False
+        except IndexError:
+            return False
+        return True
