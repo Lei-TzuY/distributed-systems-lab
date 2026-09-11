@@ -28,16 +28,12 @@ class LeaderLogObservation:
     term: int
     leader_id: str
     log: tuple[LogEntry, ...]
+    base_index: int = 0
+    base_term: int = 0
 
 
 class ElectionSafetyChecker:
-    """Executable Election Safety assertion across deterministic lifecycle checkpoints.
-
-    The checker independently remembers the first leader observed for every term.
-    Each checkpoint validates both the cluster's recorded leaders and all nodes that
-    currently expose the leader role. Seeing a different leader for an already
-    observed term raises ``ElectionSafetyViolation`` immediately.
-    """
+    """Executable Election Safety assertion across deterministic lifecycle checkpoints."""
 
     def __init__(self) -> None:
         self._leaders_by_term: dict[int, str] = {}
@@ -59,7 +55,6 @@ class ElectionSafetyChecker:
     def assert_cluster(self, cluster: RaftCluster) -> None:
         for term, node_id in sorted(cluster.leaders_by_term.items()):
             self.observe_leader(term=term, node_id=node_id)
-
         for node_id in cluster.node_ids:
             node = cluster.node(node_id)
             if node.role is RaftRole.LEADER:
@@ -69,20 +64,26 @@ class ElectionSafetyChecker:
 class LeaderAppendOnlyChecker:
     """Executable Leader Append-Only assertion across leader checkpoints.
 
-    For each observed ``(term, leader)`` epoch, the checker remembers the longest
-    log seen while that node exposes the leader role. Later checkpoints in the same
-    leadership epoch must retain that entire prefix. Former leaders are not checked
-    after stepping down because Raft followers may legitimately replace uncommitted
-    suffixes through AppendEntries conflict resolution.
+    Observations use absolute-index ``RaftLogView`` semantics. A leader may discard
+    a prefix through legitimate compaction, but its compacted boundary must advance
+    monotonically, its absolute last index may not shrink, the boundary term must
+    agree with any previously observed entry at that index, and every retained
+    overlapping entry must remain identical within the same leadership epoch.
     """
 
     def __init__(self) -> None:
-        self._logs_by_leadership: dict[tuple[int, str], tuple[LogEntry, ...]] = {}
+        self._logs_by_leadership: dict[tuple[int, str], RaftLogView] = {}
 
     @property
     def observations(self) -> tuple[LeaderLogObservation, ...]:
         return tuple(
-            LeaderLogObservation(term=term, leader_id=leader_id, log=log)
+            LeaderLogObservation(
+                term=term,
+                leader_id=leader_id,
+                log=log.entries,
+                base_index=log.base_index,
+                base_term=log.base_term,
+            )
             for (term, leader_id), log in sorted(self._logs_by_leadership.items())
         )
 
@@ -90,21 +91,40 @@ class LeaderAppendOnlyChecker:
         if leader.role is not RaftRole.LEADER:
             raise ValueError("node must currently be a leader")
         key = (leader.current_term, leader.node_id)
-        current = leader.log
+        current = leader.log_view
         previous = self._logs_by_leadership.get(key)
         if previous is not None:
-            if len(current) < len(previous):
+            if current.base_index < previous.base_index:
                 raise LeaderAppendOnlyViolation(
                     "Leader Append-Only violated: "
                     f"leader {leader.node_id!r} in term {leader.current_term} "
-                    f"shrunk its log from {len(previous)} to {len(current)} entries"
+                    f"regressed compacted boundary from {previous.base_index} "
+                    f"to {current.base_index}"
                 )
-            if current[: len(previous)] != previous:
+            if current.last_index < previous.last_index:
                 raise LeaderAppendOnlyViolation(
                     "Leader Append-Only violated: "
                     f"leader {leader.node_id!r} in term {leader.current_term} "
-                    "overwrote an entry in its previously observed log prefix"
+                    f"shrunk its log in absolute index space from {previous.last_index} "
+                    f"to {current.last_index}"
                 )
+            if previous.base_index < current.base_index <= previous.last_index:
+                expected_term = previous.term_at(current.base_index)
+                if current.base_term != expected_term:
+                    raise LeaderAppendOnlyViolation(
+                        "Leader Append-Only violated: "
+                        f"leader {leader.node_id!r} in term {leader.current_term} "
+                        f"changed compacted boundary term at index {current.base_index} "
+                        f"from {expected_term} to {current.base_term}"
+                    )
+            overlap_start = max(previous.first_retained_index, current.first_retained_index)
+            for index in range(overlap_start, previous.last_index + 1):
+                if current.entry_at(index) != previous.entry_at(index):
+                    raise LeaderAppendOnlyViolation(
+                        "Leader Append-Only violated: "
+                        f"leader {leader.node_id!r} in term {leader.current_term} "
+                        f"overwrote an entry previously observed at absolute index {index}"
+                    )
         self._logs_by_leadership[key] = current
 
     def assert_cluster(self, cluster: RaftCluster) -> None:
@@ -115,14 +135,7 @@ class LeaderAppendOnlyChecker:
 
 
 class LeaderCompletenessChecker:
-    """Executable Raft Leader Completeness assertion for deterministic tests.
-
-    The checker records committed log positions at the moment a leader advances
-    its commit index. Any leader in a strictly higher term must contain the same
-    entry at every previously observed committed index. Compacted prefixes are
-    addressed through ``RaftLogView`` so absolute Raft indexes are never confused
-    with retained-suffix tuple offsets.
-    """
+    """Executable Raft Leader Completeness assertion for deterministic tests."""
 
     def __init__(self) -> None:
         self._committed: dict[int, CommittedEntryObservation] = {}
@@ -131,19 +144,13 @@ class LeaderCompletenessChecker:
     def committed_entries(self) -> tuple[CommittedEntryObservation, ...]:
         return tuple(self._committed[index] for index in sorted(self._committed))
 
-    def observe_commit(
-        self,
-        leader: RaftNode,
-        *,
-        previous_commit_index: int = 0,
-    ) -> None:
+    def observe_commit(self, leader: RaftNode, *, previous_commit_index: int = 0) -> None:
         if leader.role is not RaftRole.LEADER:
             raise ValueError("committed entries must be observed from a leader")
         if previous_commit_index < 0:
             raise ValueError("previous_commit_index must be non-negative")
         if previous_commit_index > leader.commit_index:
             raise ValueError("previous_commit_index cannot exceed leader commit index")
-
         log = leader.log_view
         first_observable = max(previous_commit_index + 1, log.first_retained_index)
         for index in range(first_observable, leader.commit_index + 1):
@@ -162,41 +169,27 @@ class LeaderCompletenessChecker:
                 committed_in_term=leader.current_term,
                 leader_id=leader.node_id,
             )
-
         self.assert_leader_node(leader)
 
     def assert_leader_node(self, leader: RaftNode) -> None:
         if leader.role is not RaftRole.LEADER:
             raise ValueError("node must currently be a leader")
         self.assert_leader_view(
-            term=leader.current_term,
-            node_id=leader.node_id,
-            log=leader.log_view,
+            term=leader.current_term, node_id=leader.node_id, log=leader.log_view
         )
 
     def assert_leader_log(
-        self,
-        *,
-        term: int,
-        node_id: str,
-        log: tuple[LogEntry, ...],
+        self, *, term: int, node_id: str, log: tuple[LogEntry, ...]
     ) -> None:
         self.assert_leader_view(
-            term=term,
-            node_id=node_id,
-            log=RaftLogView.uncompacted(log),
+            term=term, node_id=node_id, log=RaftLogView.uncompacted(log)
         )
 
     def assert_leader_view(
-        self,
-        *,
-        term: int,
-        node_id: str,
-        log: RaftLogView,
+        self, *, term: int, node_id: str, log: RaftLogView
     ) -> None:
         if term < 0:
             raise ValueError("leader term must be non-negative")
-
         for observation in self.committed_entries:
             if term <= observation.committed_in_term:
                 continue
@@ -228,22 +221,12 @@ class LeaderCompletenessChecker:
     def assert_recorded_leaders(self, cluster: RaftCluster) -> None:
         for term, node_id in sorted(cluster.leaders_by_term.items()):
             self.assert_leader_view(
-                term=term,
-                node_id=node_id,
-                log=cluster.node(node_id).log_view,
+                term=term, node_id=node_id, log=cluster.node(node_id).log_view
             )
 
 
 class RaftSafetyHarness:
-    """Checkpoint core Raft safety properties across deterministic lifecycles.
-
-    A checkpoint validates Election Safety and Leader Append-Only, observes every
-    currently committed leader prefix, validates all recorded leaders against
-    Leader Completeness, checks Log Matching, and re-validates durable applied
-    histories against State Machine Safety. Tests and scenario runners should
-    checkpoint after elections, leader appends, replication/commit advancement,
-    state-machine application, crash/restart boundaries, and leader replacement.
-    """
+    """Checkpoint core Raft safety properties across deterministic lifecycles."""
 
     def __init__(self, cluster: RaftCluster) -> None:
         self.cluster = cluster
@@ -258,7 +241,6 @@ class RaftSafetyHarness:
     def checkpoint(self) -> None:
         self.election_safety.assert_cluster(self.cluster)
         self.leader_append_only.assert_cluster(self.cluster)
-
         for node_id in self.cluster.node_ids:
             node = self.cluster.node(node_id)
             if node.role is not RaftRole.LEADER:
@@ -267,11 +249,9 @@ class RaftSafetyHarness:
             if node.commit_index < previous_commit_index:
                 previous_commit_index = 0
             self.leader_completeness.observe_commit(
-                node,
-                previous_commit_index=previous_commit_index,
+                node, previous_commit_index=previous_commit_index
             )
             self._observed_commit_index[node_id] = node.commit_index
-
         self.leader_completeness.assert_recorded_leaders(self.cluster)
         self.cluster.assert_log_matching()
         self.state_machine.assert_state_machine_safety()

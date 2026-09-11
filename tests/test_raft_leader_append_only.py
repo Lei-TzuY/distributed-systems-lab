@@ -34,6 +34,46 @@ def test_leader_append_only_checker_accepts_monotonic_log_growth() -> None:
     assert harness.leader_append_only.observations[-1].log == (first, second)
 
 
+def test_safety_harness_accepts_leader_prefix_compaction() -> None:
+    sim, cluster, harness = _elect_single_node_leader()
+    leader = cluster.node("n1")
+    entries = (
+        LogEntry(term=leader.current_term, command="first"),
+        LogEntry(term=leader.current_term, command="second"),
+    )
+    sim.persistent_state["n1"]["log"] = entries
+    harness.checkpoint()
+
+    compacted = leader.log_view.compact_through(1)
+    sim.persistent_state["n1"]["log"] = compacted.entries
+    sim.persistent_state["n1"]["log_base_index"] = compacted.base_index
+    sim.persistent_state["n1"]["log_base_term"] = compacted.base_term
+    harness.checkpoint()
+
+    observation = harness.leader_append_only.observations[-1]
+    assert observation.base_index == 1
+    assert observation.base_term == entries[0].term
+    assert observation.log == (entries[1],)
+
+
+def test_safety_harness_rejects_compaction_boundary_term_rewrite() -> None:
+    sim, cluster, harness = _elect_single_node_leader()
+    leader = cluster.node("n1")
+    entries = (
+        LogEntry(term=leader.current_term, command="first"),
+        LogEntry(term=leader.current_term, command="second"),
+    )
+    sim.persistent_state["n1"]["log"] = entries
+    harness.checkpoint()
+
+    sim.persistent_state["n1"]["log"] = entries[1:]
+    sim.persistent_state["n1"]["log_base_index"] = 1
+    sim.persistent_state["n1"]["log_base_term"] = entries[0].term + 1
+
+    with pytest.raises(LeaderAppendOnlyViolation, match="changed compacted boundary term"):
+        harness.checkpoint()
+
+
 def test_safety_harness_rejects_leader_log_truncation() -> None:
     sim, cluster, harness = _elect_single_node_leader()
     leader = cluster.node("n1")
