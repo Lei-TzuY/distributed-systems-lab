@@ -41,8 +41,18 @@ def test_leadership_transfer_routes_timeout_now_through_simulator() -> None:
 
     requests = [record for record in sim.trace if record.kind == "raft-timeout-now-request"]
     delivered = [record for record in sim.trace if record.kind == "raft-timeout-now-delivered"]
-    assert requests[-1].details == {"leader": "n1", "transferee": "n2", "term": 1}
-    assert delivered[-1].details == {"leader": "n1", "transferee": "n2", "term": 1}
+    assert requests[-1].details == {
+        "leader": "n1",
+        "transferee": "n2",
+        "term": 1,
+        "attempt_id": 1,
+    }
+    assert delivered[-1].details == {
+        "leader": "n1",
+        "transferee": "n2",
+        "term": 1,
+        "attempt_id": 1,
+    }
     assert any(
         record.kind == "send"
         and isinstance(record.details["payload"], TimeoutNow)
@@ -50,6 +60,38 @@ def test_leadership_transfer_routes_timeout_now_through_simulator() -> None:
         and record.details["dst"] == "n2"
         for record in sim.trace
     )
+    harness.checkpoint()
+
+
+def test_cancelled_timeout_now_attempt_cannot_trigger_later_election() -> None:
+    sim, cluster = _elected_cluster()
+    transport = LeadershipTransferTransport.for_cluster(cluster)
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+
+    attempt_id = transport.send_timeout_now("n1", "n2", term=1)
+    assert transport.cancel_timeout_now(attempt_id)
+    sim.run()
+
+    assert cluster.node("n1").role is RaftRole.LEADER
+    assert cluster.node("n1").current_term == 1
+    assert cluster.node("n2").role is RaftRole.FOLLOWER
+    assert cluster.node("n2").current_term == 1
+    assert not any(record.kind == "raft-timeout-now-delivered" for record in sim.trace)
+
+    cancelled = [record for record in sim.trace if record.kind == "raft-timeout-now-cancelled"]
+    assert cancelled[-1].details == {
+        "leader": "n1",
+        "transferee": "n2",
+        "term": 1,
+        "attempt_id": attempt_id,
+    }
+    rejected = [record for record in sim.trace if record.kind == "raft-timeout-now-rejected"]
+    assert rejected[-1].details["leader"] == "n1"
+    assert rejected[-1].details["transferee"] == "n2"
+    assert rejected[-1].details["term"] == 1
+    assert rejected[-1].details["attempt_id"] == attempt_id
+    assert rejected[-1].details["reason"] == "stale-transfer-attempt"
     harness.checkpoint()
 
 
