@@ -153,6 +153,60 @@ class KVClientHistory:
             node=reader.leader.node_id,
             consistency="linearizable",
         )
+        return self._complete_linearizable_read(
+            operation_id,
+            client_id,
+            reader,
+            key,
+            max_attempts_per_peer=max_attempts_per_peer,
+        )
+
+    def retry_linearizable_read(
+        self,
+        operation_id: str,
+        client_id: str,
+        reader: LinearizableKVReader,
+        key: str,
+        *,
+        max_attempts_per_peer: int = 1,
+    ) -> str | None:
+        """Retry an incomplete linearizable read without creating a new invocation."""
+
+        if reader.kv is not self.kv:
+            raise ValueError("linearizable reader must use the same replicated KV state")
+        pending = {item.operation_id: item for item in self.history.pending()}.get(operation_id)
+        if pending is None:
+            raise ValueError(f"unknown pending linearizable read {operation_id!r}")
+        if pending.client_id != client_id or pending.operation != Get(key):
+            raise ValueError("linearizable read retry must match the pending invocation")
+
+        self.sim._record(
+            "client-retry",
+            operation_id=operation_id,
+            client_id=client_id,
+            request_id=None,
+            operation="get",
+            key=key,
+            node=reader.leader.node_id,
+            consistency="linearizable",
+        )
+        return self._complete_linearizable_read(
+            operation_id,
+            client_id,
+            reader,
+            key,
+            max_attempts_per_peer=max_attempts_per_peer,
+        )
+
+    def _complete_linearizable_read(
+        self,
+        operation_id: str,
+        client_id: str,
+        reader: LinearizableKVReader,
+        key: str,
+        *,
+        max_attempts_per_peer: int,
+    ) -> str | None:
         result = reader.get(key, max_attempts_per_peer=max_attempts_per_peer)
         self.history.respond(operation_id, result)
         self.sim._record(
