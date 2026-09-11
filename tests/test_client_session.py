@@ -137,7 +137,6 @@ def test_session_rejects_linearizable_read_before_pending_write_history_mutation
 def test_failed_linearizable_read_remains_single_flight_until_exact_retry() -> None:
     sim, cluster, kv, session, replicator, reader = _ready_session_cluster()
     leader = cluster.node("n1")
-    safety = RaftSafetyHarness(cluster)
 
     request = session.invoke_write("write-1", 1, Put("x", "one"))
     sim.persistent_state[leader.node_id]["log"] = (
@@ -148,6 +147,7 @@ def test_failed_linearizable_read_remains_single_flight_until_exact_retry() -> N
     assert leader.commit_index == 1
     kv.apply_committed("n1")
     session.complete_write("write-1", "n1")
+    safety = RaftSafetyHarness(cluster)
     safety.checkpoint()
 
     sim.crash("n2")
