@@ -87,6 +87,7 @@ class AppendEntriesResponse:
 @dataclass(frozen=True, slots=True)
 class _ElectionTimeout:
     generation: int
+    deadline: int | None = None
 
 
 class ElectionSafetyViolation(AssertionError):
@@ -196,6 +197,7 @@ class RaftNode:
         self.peers = peers
         self._election_timeout = election_timeout
         self._election_timer_generation = 0
+        self._election_timer_deadline: int | None = None
         persistent = self.sim.persistent_state[node_id]
         persistent.setdefault("current_term", 0)
         persistent.setdefault("voted_for", None)
@@ -288,18 +290,20 @@ class RaftNode:
         self._election_timer_generation += 1
         generation = self._election_timer_generation
         timeout = self._election_timeout
+        deadline = self.sim.time + timeout
+        self._election_timer_deadline = deadline
         self.sim._record(
             "raft-election-timeout-reset",
             node=self.node_id,
             generation=generation,
-            deadline=self.sim.time + timeout,
+            deadline=deadline,
             reason=reason,
         )
         self.sim._schedule(
             Message(
                 src=self.node_id,
                 dst=self.node_id,
-                payload=_ElectionTimeout(generation),
+                payload=_ElectionTimeout(generation, deadline),
                 ordinal=0,
             ),
             timeout,
@@ -311,6 +315,7 @@ class RaftNode:
             raise ValueError("restart callback invoked by a different simulator")
         self._validate_persistent_log()
         self._election_timer_generation += 1
+        self._election_timer_deadline = None
         self._reset_volatile_defaults()
         self.sim._record(
             "raft-restart",
@@ -450,6 +455,27 @@ class RaftNode:
                 node=self.node_id,
                 generation=timeout.generation,
                 current_generation=self._election_timer_generation,
+            )
+            return
+        expected_deadline = self._election_timer_deadline
+        if timeout.deadline != expected_deadline:
+            self.sim._record(
+                "raft-election-timeout-rejected",
+                node=self.node_id,
+                generation=timeout.generation,
+                deadline=timeout.deadline,
+                expected_deadline=expected_deadline,
+                reason="deadline-mismatch",
+            )
+            return
+        if expected_deadline is None or self.sim.time < expected_deadline:
+            self.sim._record(
+                "raft-election-timeout-rejected",
+                node=self.node_id,
+                generation=timeout.generation,
+                deadline=timeout.deadline,
+                expected_deadline=expected_deadline,
+                reason="early-delivery",
             )
             return
         if self.role is RaftRole.LEADER:
@@ -603,6 +629,7 @@ class RaftNode:
         self.cluster.record_leader(term, self.node_id)
         self.sim.volatile_state[self.node_id]["role"] = RaftRole.LEADER.value
         self._election_timer_generation += 1
+        self._election_timer_deadline = None
         self.sim._record("raft-leader", node=self.node_id, term=term)
 
     def _has_majority(self, votes: int) -> bool:
