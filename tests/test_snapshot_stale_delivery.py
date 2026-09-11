@@ -1,5 +1,6 @@
 from distlab.kv import ReplicatedKV
 from distlab.raft import RaftCluster
+from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
 from distlab.snapshot import KVSnapshot, KVSnapshotStore
 from distlab.snapshot_transport import InstallSnapshotRequest, SnapshotTransport
@@ -56,7 +57,9 @@ def test_delayed_stale_snapshot_is_acknowledged_without_rollback() -> None:
     assert stale_records[0].details["incoming_index"] == 2
     assert stale_records[0].details["installed_index"] == 4
     assert responses[-1].details["success"] is True
-    assert responses[-1].details["last_included_index"] == 4
+    assert responses[-1].details["requested_last_included_index"] == 2
+    assert responses[-1].details["last_included_index"] == 2
 
+    RaftSafetyHarness(cluster).checkpoint()
     cluster.assert_log_matching()
     kv.applier.assert_state_machine_safety()
