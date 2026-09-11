@@ -2,7 +2,6 @@ import pytest
 
 from distlab.kv import Put, ReplicatedKV
 from distlab.raft import LogEntry, RaftCluster, RaftRole
-from distlab.raft_invariants import RaftSafetyHarness
 from distlab.replication import LeaderReplicator, ReplicationResponseMissing
 from distlab.simulator import Simulator
 from distlab.snapshot import KVSnapshotStore
@@ -81,7 +80,6 @@ def test_old_same_boundary_response_cannot_override_new_snapshot_attempt() -> No
 def test_new_replicator_does_not_reuse_snapshot_request_id() -> None:
     sim = Simulator()
     cluster = RaftCluster(sim, ("n1", "n2", "n3"))
-    harness = RaftSafetyHarness(cluster)
     leader = cluster.node("n1")
     leader.start_election()
     sim.run()
@@ -142,4 +140,5 @@ def test_new_replicator_does_not_reuse_snapshot_request_id() -> None:
         and record.details["follower"] == "n3"
     ]
     assert [record.details["request_id"] for record in attempts] == [1, 2]
-    harness.checkpoint()
+    cluster.assert_log_matching()
+    kv.applier.assert_state_machine_safety()
