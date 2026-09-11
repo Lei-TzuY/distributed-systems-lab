@@ -256,12 +256,17 @@ class SnapshotTransport:
                     installed_index = request.snapshot.last_included_index
                     success = True
 
+        acknowledged_index = (
+            request.snapshot.last_included_index
+            if success and installed_index > request.snapshot.last_included_index
+            else installed_index
+        )
         response = InstallSnapshotResponse(
             term=follower.current_term,
             leader_id=request.leader_id,
             follower_id=request.follower_id,
             success=success,
-            last_included_index=installed_index,
+            last_included_index=acknowledged_index,
             requested_last_included_index=request.snapshot.last_included_index,
             request_id=request.request_id,
         )
