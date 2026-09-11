@@ -1,3 +1,5 @@
+import pytest
+
 from distlab.leadership_transfer import LeadershipTransfer
 from distlab.leadership_transfer_transport import LeadershipTransferTransport, TimeoutNow
 from distlab.membership import ReconfigurableRaftCluster
@@ -92,6 +94,40 @@ def test_cancelled_timeout_now_attempt_cannot_trigger_later_election() -> None:
     assert rejected[-1].details["term"] == 1
     assert rejected[-1].details["attempt_id"] == attempt_id
     assert rejected[-1].details["reason"] == "stale-transfer-attempt"
+    harness.checkpoint()
+
+
+def test_timeout_now_serializes_overlapping_attempts_for_same_leader_term() -> None:
+    sim, cluster = _elected_cluster()
+    transport = LeadershipTransferTransport.for_cluster(cluster)
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+
+    first_attempt_id = transport.send_timeout_now("n1", "n2", term=1)
+    with pytest.raises(RuntimeError, match="already active"):
+        transport.send_timeout_now("n1", "n3", term=1)
+
+    assert cluster.node("n1").role is RaftRole.LEADER
+    assert cluster.node("n1").current_term == 1
+    assert cluster.node("n2").role is RaftRole.FOLLOWER
+    assert cluster.node("n3").role is RaftRole.FOLLOWER
+    assert not any(record.kind == "raft-election-start" and record.details["node"] == "n3" for record in sim.trace)
+
+    rejected = [record for record in sim.trace if record.kind == "raft-timeout-now-request-rejected"]
+    assert rejected[-1].details == {
+        "leader": "n1",
+        "transferee": "n3",
+        "term": 1,
+        "active_attempt_id": first_attempt_id,
+        "active_transferee": "n2",
+        "reason": "transfer-attempt-already-active",
+    }
+
+    assert transport.cancel_timeout_now(first_attempt_id)
+    second_attempt_id = transport.send_timeout_now("n1", "n3", term=1)
+    assert second_attempt_id > first_attempt_id
+    assert transport.cancel_timeout_now(second_attempt_id)
+    sim.run()
     harness.checkpoint()
 
 
