@@ -168,7 +168,7 @@ class LeadershipTransfer:
             commit_index=target.commit_index,
         )
 
-        self.transfer_transport.send_timeout_now(
+        attempt_id = self.transfer_transport.send_timeout_now(
             self.leader.node_id,
             transferee_id,
             term=previous_term,
@@ -181,6 +181,7 @@ class LeadershipTransfer:
                 break
 
         if not self._transfer_elected(target, previous_term):
+            self.transfer_transport.cancel_timeout_now(attempt_id)
             self._record_failure(
                 transferee_id,
                 previous_term,
