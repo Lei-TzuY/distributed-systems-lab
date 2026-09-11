@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .membership import ReconfigurableRaftCluster
+from .membership import ReconfigurableRaftCluster, VotingConfiguration
 from .raft import RaftCluster, RaftNode, RaftRole
 from .simulator import Message, Simulator
 
@@ -42,9 +42,7 @@ class LeadershipTransferTransport:
         self.sim = cluster.sim
         self._next_attempt_id = 0
         self._active_attempts: dict[int, tuple[str, str, int]] = {}
-        self._attempt_configurations: dict[
-            int, tuple[frozenset[str], frozenset[str] | None] | None
-        ] = {}
+        self._attempt_configurations: dict[int, VotingConfiguration | None] = {}
         for node_id in self.cluster.node_ids:
             self.sim.register(self.endpoint(node_id), self._handle_message)
 
@@ -132,13 +130,10 @@ class LeadershipTransferTransport:
                 return attempt_id, transferee_id
         return None
 
-    def _configuration_identity(
-        self,
-    ) -> tuple[frozenset[str], frozenset[str] | None] | None:
+    def _configuration_identity(self) -> VotingConfiguration | None:
         if not isinstance(self.cluster, ReconfigurableRaftCluster):
             return None
-        configuration = self.cluster.voting_configuration
-        return configuration.old_voters, configuration.new_voters
+        return self.cluster.voting_configuration
 
     def _handle_message(self, sim: Simulator, message: Message) -> None:
         if sim is not self.sim:
@@ -214,9 +209,7 @@ class LeadershipTransferTransport:
                 and request.transferee_id not in configuration.new_voters
             ):
                 reason = "transferee-outgoing-only"
-            elif self._attempt_configurations.get(
-                request.attempt_id
-            ) != self._configuration_identity():
+            elif self._attempt_configurations.get(request.attempt_id) is not configuration:
                 reason = "membership-configuration-changed"
 
         if active_identity == (request.leader_id, request.transferee_id, request.term):
