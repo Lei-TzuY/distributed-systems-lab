@@ -1,10 +1,15 @@
 import pytest
 
 from distlab.client_history import KVClientHistory
-from distlab.client_session import KVClientSession, SessionWritePending, StaleClientRequest
+from distlab.client_session import (
+    KVClientSession,
+    SessionReadPending,
+    SessionWritePending,
+    StaleClientRequest,
+)
 from distlab.kv import ClientRequest, Put, ReplicatedKV
 from distlab.linearizability import SingleKeyKVLinearizabilityChecker
-from distlab.linearizable_read import LinearizableKVReader
+from distlab.linearizable_read import LinearizableKVReader, ReadQuorumUnavailable
 from distlab.raft import LogEntry, RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.replication import LeaderReplicator
@@ -127,3 +132,52 @@ def test_session_rejects_linearizable_read_before_pending_write_history_mutation
     assert session.clients.history.invocations() == before
     assert [record for record in sim.trace if record.kind == "raft-linearizable-read"] == []
     RaftSafetyHarness(cluster).checkpoint()
+
+
+def test_failed_linearizable_read_remains_single_flight_until_exact_retry() -> None:
+    sim, cluster, kv, session, replicator, reader = _ready_session_cluster()
+    leader = cluster.node("n1")
+    safety = RaftSafetyHarness(cluster)
+
+    request = session.invoke_write("write-1", 1, Put("x", "one"))
+    sim.persistent_state[leader.node_id]["log"] = (
+        *leader.log,
+        LogEntry(term=leader.current_term, command=request),
+    )
+    assert replicator.replicate("n2") is True
+    assert leader.commit_index == 1
+    kv.apply_committed("n1")
+    session.complete_write("write-1", "n1")
+    safety.checkpoint()
+
+    sim.crash("n2")
+    sim.crash("n3")
+    with pytest.raises(ReadQuorumUnavailable):
+        session.linearizable_read("read-1", reader, "x")
+
+    pending = session.pending_read()
+    assert pending is not None
+    assert pending.operation_id == "read-1"
+    assert pending.key == "x"
+    assert [item.operation_id for item in session.clients.history.pending()] == ["read-1"]
+    with pytest.raises(SessionReadPending, match="cannot write while read"):
+        session.invoke_write("write-2", 2, Put("x", "two"))
+    with pytest.raises(SessionReadPending, match="already has pending read"):
+        session.linearizable_read("read-2", reader, "x")
+
+    sim.restart("n2")
+    assert session.retry_linearizable_read("read-1", reader) == "one"
+    assert session.pending_read() is None
+    assert session.clients.history.pending() == ()
+    read_invocations = [
+        item for item in session.clients.history.invocations() if item.operation_id == "read-1"
+    ]
+    assert len(read_invocations) == 1
+    retries = [
+        record
+        for record in sim.trace
+        if record.kind == "client-retry" and record.details["operation_id"] == "read-1"
+    ]
+    assert len(retries) == 1
+    safety.checkpoint()
+    assert SingleKeyKVLinearizabilityChecker().check(session.clients.history).linearizable is True
