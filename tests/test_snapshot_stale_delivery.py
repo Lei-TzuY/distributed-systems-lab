@@ -2,7 +2,7 @@ from distlab.kv import ReplicatedKV
 from distlab.raft import RaftCluster
 from distlab.simulator import Simulator
 from distlab.snapshot import KVSnapshot, KVSnapshotStore
-from distlab.snapshot_transport import SnapshotTransport
+from distlab.snapshot_transport import InstallSnapshotRequest, SnapshotTransport
 
 
 def test_delayed_stale_snapshot_is_acknowledged_without_rollback() -> None:
@@ -26,11 +26,16 @@ def test_delayed_stale_snapshot_is_acknowledged_without_rollback() -> None:
     )
     store.install("n3", newer)
 
-    transport.send_install_snapshot(
-        leader_id="n1",
-        follower_id="n3",
-        term=2,
-        snapshot=stale,
+    sim.send(
+        "n1",
+        "n3",
+        InstallSnapshotRequest(
+            leader_id="n1",
+            follower_id="n3",
+            term=2,
+            snapshot=stale,
+        ),
+        delivery_dst=transport.endpoint("n3"),
     )
     sim.run()
 

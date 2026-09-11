@@ -91,8 +91,13 @@ class SnapshotTransport:
             raise ValueError("snapshot transport requires distinct Raft nodes")
         if not self.sim.is_alive(leader_id):
             raise RuntimeError(f"crashed node {leader_id!r} cannot send InstallSnapshot")
+        if term < 0:
+            raise ValueError("term must be non-negative")
         if request_id < 0:
             raise ValueError("request_id must be non-negative")
+        leader = self.cluster.node(leader_id)
+        if leader.role is not RaftRole.LEADER or leader.current_term != term:
+            raise RuntimeError("InstallSnapshot send requires current leader authority")
         self.sim._record(
             "raft-install-snapshot-request",
             leader=leader_id,

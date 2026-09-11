@@ -197,3 +197,62 @@ def test_snapshot_transport_rejects_crashed_sender_before_trace_or_delivery() ->
     assert kv.snapshot("n3") == {}
     assert tuple(sim.trace) == trace_before
     RaftSafetyHarness(cluster).checkpoint()
+
+
+def test_snapshot_transport_rejects_live_follower_sender_before_trace_or_delivery() -> None:
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    kv, store, transport = _transport(sim, cluster)
+    follower = cluster.node("n3")
+    trace_before = tuple(sim.trace)
+
+    with pytest.raises(RuntimeError, match="current leader authority"):
+        transport.send_install_snapshot(
+            leader_id="n1",
+            follower_id="n3",
+            term=cluster.node("n1").current_term,
+            snapshot=_snapshot(),
+        )
+
+    sim.run()
+    assert follower.current_term == 0
+    assert follower.log_base_index == 0
+    assert store.latest("n3") is None
+    assert kv.snapshot("n3") == {}
+    assert tuple(sim.trace) == trace_before
+    RaftSafetyHarness(cluster).checkpoint()
+
+
+def test_snapshot_transport_rejects_deposed_leader_sender_before_trace_or_delivery() -> None:
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    kv, store, transport = _transport(sim, cluster)
+    former_leader = cluster.node("n1")
+    former_leader.start_election()
+    sim.run()
+    assert former_leader.role is RaftRole.LEADER
+    stale_term = former_leader.current_term
+
+    new_leader = cluster.node("n2")
+    new_leader.start_election()
+    sim.run()
+    assert new_leader.role is RaftRole.LEADER
+    assert former_leader.role is RaftRole.FOLLOWER
+    assert former_leader.current_term > stale_term
+
+    follower = cluster.node("n3")
+    trace_before = tuple(sim.trace)
+    with pytest.raises(RuntimeError, match="current leader authority"):
+        transport.send_install_snapshot(
+            leader_id="n1",
+            follower_id="n3",
+            term=stale_term,
+            snapshot=_snapshot(),
+        )
+
+    sim.run()
+    assert follower.log_base_index == 0
+    assert store.latest("n3") is None
+    assert kv.snapshot("n3") == {}
+    assert tuple(sim.trace) == trace_before
+    RaftSafetyHarness(cluster).checkpoint()
