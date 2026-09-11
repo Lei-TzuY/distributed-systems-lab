@@ -7,6 +7,7 @@ from distlab.raft import (
     RaftCluster,
     RequestVote,
     RequestVoteResponse,
+    _ElectionTimeout,
 )
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Message, Simulator
@@ -93,4 +94,26 @@ def test_unknown_source_principal_cannot_mutate_raft_state(payload: object) -> N
     assert rejected[0].details["src"] == "outsider"
     assert rejected[0].details["claimed_src"] == "outsider"
     assert rejected[0].details["reason"] == "unknown-source-principal"
+    RaftSafetyHarness(cluster).checkpoint()
+
+
+def test_remote_peer_cannot_inject_local_election_timeout() -> None:
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    follower = cluster.node("n2")
+
+    sim.send("n3", "n2", _ElectionTimeout(generation=0))
+    sim.run()
+
+    assert follower.current_term == 0
+    assert follower.voted_for is None
+    assert follower.role.value == "follower"
+    assert not any(record.kind == "raft-election-start" for record in sim.trace)
+    rejected = [record for record in sim.trace if record.kind == "raft-envelope-rejected"]
+    assert len(rejected) == 1
+    assert rejected[0].details["node"] == "n2"
+    assert rejected[0].details["src"] == "n3"
+    assert rejected[0].details["claimed_src"] == "n2"
+    assert rejected[0].details["payload_type"] == "_ElectionTimeout"
+    assert rejected[0].details["reason"] == "source-identity-mismatch"
     RaftSafetyHarness(cluster).checkpoint()
