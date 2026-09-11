@@ -119,7 +119,8 @@ class LeadershipTransferTransport:
         return True
 
     def _active_attempt_for(self, leader_id: str, term: int) -> tuple[int, str] | None:
-        for attempt_id, (active_leader, transferee_id, active_term) in self._active_attempts.items():
+        for attempt_id, identity in self._active_attempts.items():
+            active_leader, transferee_id, active_term = identity
             if active_leader == leader_id and active_term == term:
                 return attempt_id, transferee_id
         return None
