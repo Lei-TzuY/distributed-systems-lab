@@ -412,6 +412,8 @@ class RaftNode:
         claimed_src: str | None = None
         if message.dst != self.node_id:
             reason = "destination-identity-mismatch"
+        elif isinstance(payload, _ElectionTimeout):
+            claimed_src = self.node_id
         elif isinstance(payload, RequestVote):
             claimed_src = payload.candidate_id
         elif isinstance(payload, RequestVoteResponse):
