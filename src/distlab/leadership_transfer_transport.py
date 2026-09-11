@@ -127,6 +127,12 @@ class LeadershipTransferTransport:
             reason = "source-not-recorded-leader"
         elif leader.role is not RaftRole.LEADER or leader.current_term != request.term:
             reason = "source-no-longer-current-leader"
+        elif (
+            target.last_log_index != leader.last_log_index
+            or target.last_log_term != leader.last_log_term
+            or target.commit_index < leader.commit_index
+        ):
+            reason = "transferee-not-caught-up"
         elif isinstance(self.cluster, ReconfigurableRaftCluster):
             configuration = self.cluster.voting_configuration
             if not self.cluster.is_voter(request.transferee_id):
