@@ -230,6 +230,10 @@ class LeaderReplicator:
         ):
             raise ReplicationError("leader snapshot does not match compacted log boundary")
 
+        self._snapshot_request_id = max(
+            self._snapshot_request_id,
+            self._snapshot_request_id_floor(),
+        )
         self._snapshot_request_id += 1
         request_id = self._snapshot_request_id
         trace_start = len(self.sim.trace)
@@ -363,6 +367,18 @@ class LeaderReplicator:
                 continue
             return record
         return None
+
+    def _snapshot_request_id_floor(self) -> int:
+        floor = 0
+        for record in self.sim.trace:
+            if record.kind != "raft-replication-snapshot":
+                continue
+            if record.details.get("leader") != self.leader.node_id:
+                continue
+            if int(record.details.get("term", -1)) != self._term:
+                continue
+            floor = max(floor, int(record.details.get("request_id", 0)))
+        return floor
 
     def _append_response_ordinal_floor(self, peer: str) -> int:
         floor = 0
