@@ -66,6 +66,21 @@ class LeadershipTransferTransport:
             raise RuntimeError("leadership transfer trigger requires a live source leader")
         if leader.role is not RaftRole.LEADER or leader.current_term != term:
             raise RuntimeError("leadership transfer trigger requires current leader authority")
+        active_attempt = self._active_attempt_for(leader_id, term)
+        if active_attempt is not None:
+            active_attempt_id, active_transferee = active_attempt
+            self.sim._record(
+                "raft-timeout-now-request-rejected",
+                leader=leader_id,
+                transferee=transferee_id,
+                term=term,
+                active_attempt_id=active_attempt_id,
+                active_transferee=active_transferee,
+                reason="transfer-attempt-already-active",
+            )
+            raise RuntimeError(
+                "leadership transfer trigger already active for current leader term"
+            )
         self._next_attempt_id += 1
         attempt_id = self._next_attempt_id
         self._active_attempts[attempt_id] = (leader_id, transferee_id, term)
@@ -102,6 +117,12 @@ class LeadershipTransferTransport:
             attempt_id=attempt_id,
         )
         return True
+
+    def _active_attempt_for(self, leader_id: str, term: int) -> tuple[int, str] | None:
+        for attempt_id, (active_leader, transferee_id, active_term) in self._active_attempts.items():
+            if active_leader == leader_id and active_term == term:
+                return attempt_id, transferee_id
+        return None
 
     def _handle_message(self, sim: Simulator, message: Message) -> None:
         if sim is not self.sim:
