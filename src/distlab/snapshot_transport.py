@@ -102,6 +102,9 @@ class SnapshotTransport:
             leader_id
         ):
             raise RuntimeError("InstallSnapshot send requires current voter authority")
+        durable_snapshot = self.store.latest(leader_id)
+        if durable_snapshot is None or durable_snapshot != snapshot:
+            raise RuntimeError("InstallSnapshot send requires leader's durable snapshot")
         self.sim._record(
             "raft-install-snapshot-request",
             leader=leader_id,
