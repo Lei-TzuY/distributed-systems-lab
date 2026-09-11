@@ -20,6 +20,10 @@ class ReadQuorumUnavailable(LinearizableReadError):
     """Raised when the leader cannot confirm authority with a majority."""
 
 
+class ReadMembershipChanged(LinearizableReadError):
+    """Raised when the voting configuration changes during a read barrier."""
+
+
 @dataclass(frozen=True, slots=True)
 class ReadBarrierEvidence:
     """Deterministic evidence produced by a successful linearizable read barrier."""
@@ -101,16 +105,38 @@ class LinearizableKVReader:
         majority = len(cluster.node_ids) // 2 + 1
         acknowledged = {self.leader.node_id}
         acknowledged_peers: list[str] = []
+        barrier_configuration = (
+            cluster.voting_configuration
+            if isinstance(cluster, ReconfigurableRaftCluster)
+            else None
+        )
 
         def active_configuration() -> VotingConfiguration | None:
             if isinstance(cluster, ReconfigurableRaftCluster):
                 return cluster.voting_configuration
             return None
 
+        def require_same_configuration() -> None:
+            if barrier_configuration is None:
+                return
+            if active_configuration() is barrier_configuration:
+                return
+            self.leader.sim._record(
+                "raft-linearizable-read-membership-changed",
+                leader=self.leader.node_id,
+                term=self.leader.current_term,
+                acknowledged_peers=tuple(acknowledged_peers),
+                acknowledged_voters=tuple(sorted(acknowledged & barrier_configuration.voters)),
+                quorum_mode="joint" if barrier_configuration.is_joint else "stable",
+            )
+            raise ReadMembershipChanged(
+                "voting configuration changed while confirming linearizable read authority"
+            )
+
         def has_read_quorum() -> bool:
-            configuration = active_configuration()
-            if configuration is not None:
-                return configuration.has_quorum(acknowledged)
+            require_same_configuration()
+            if barrier_configuration is not None:
+                return barrier_configuration.has_quorum(acknowledged)
             return len(acknowledged) >= majority
 
         for peer in self.leader.peers:
@@ -120,11 +146,13 @@ class LinearizableKVReader:
                 if self.replicator.replicate(peer, max_attempts=max_attempts_per_peer):
                     acknowledged.add(peer)
                     acknowledged_peers.append(peer)
+                    require_same_configuration()
             except ReplicationResponseMissing:
                 continue
 
         self._require_current_leader()
-        configuration = active_configuration()
+        require_same_configuration()
+        configuration = barrier_configuration
         acknowledged_voters = (
             tuple(sorted(acknowledged & configuration.voters))
             if configuration is not None
