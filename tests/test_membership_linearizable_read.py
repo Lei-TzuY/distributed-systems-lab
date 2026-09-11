@@ -2,7 +2,11 @@ import pytest
 
 from distlab.commit_recovery import append_current_term_barrier
 from distlab.kv import Put, ReplicatedKV
-from distlab.linearizable_read import LinearizableKVReader, ReadQuorumUnavailable
+from distlab.linearizable_read import (
+    LinearizableKVReader,
+    ReadMembershipChanged,
+    ReadQuorumUnavailable,
+)
 from distlab.membership import ReconfigurableRaftCluster
 from distlab.membership_replication import MembershipAwareLeaderReplicator
 from distlab.raft import LogEntry, RaftRole
@@ -72,7 +76,7 @@ def test_joint_linearizable_read_requires_both_voter_majorities() -> None:
     safety.checkpoint()
 
 
-def test_read_barrier_revalidates_membership_after_peer_acknowledgement() -> None:
+def test_read_barrier_rejects_membership_change_after_peer_acknowledgement() -> None:
     sim, cluster, _, kv = _reader_cluster()
     sim.crash("n4")
     sim.crash("n5")
@@ -94,14 +98,51 @@ def test_read_barrier_revalidates_membership_after_peer_acknowledgement() -> Non
     reconfiguring_replicator = ReconfiguringReplicator()
     reader = LinearizableKVReader(kv, reconfiguring_replicator)
 
-    with pytest.raises(ReadQuorumUnavailable):
+    with pytest.raises(ReadMembershipChanged):
         reader.get("k", max_attempts_per_peer=1)
 
     assert reconfiguring_replicator.transitioned is True
-    failures = [
-        record for record in sim.trace if record.kind == "raft-linearizable-read-quorum-failed"
+    changed = [
+        record for record in sim.trace if record.kind == "raft-linearizable-read-membership-changed"
     ]
-    assert failures[-1].details["acknowledged_voters"] == ("n1", "n2")
-    assert failures[-1].details["quorum_mode"] == "joint"
+    assert changed[-1].details["acknowledged_voters"] == ("n1", "n2")
+    assert changed[-1].details["quorum_mode"] == "stable"
+    assert not [record for record in sim.trace if record.kind == "raft-linearizable-read"]
+    safety.checkpoint()
+
+
+def test_read_barrier_rejects_configuration_change_away_and_back() -> None:
+    sim, cluster, _, kv = _reader_cluster()
+    safety = RaftSafetyHarness(cluster)
+    safety.checkpoint()
+    original_configuration = cluster.voting_configuration
+
+    class ABAReconfiguringReplicator(MembershipAwareLeaderReplicator):
+        def __init__(self) -> None:
+            super().__init__(cluster.node("n1"))
+            self.transitioned = False
+
+        def replicate(self, peer: str, *, max_attempts: int | None = None) -> bool:
+            replicated = super().replicate(peer, max_attempts=max_attempts)
+            if peer == "n2" and replicated and not self.transitioned:
+                cluster.begin_joint_consensus("n1", ("n1", "n2", "n4"))
+                cluster.finalize_membership("n1")
+                cluster.begin_joint_consensus("n1", ("n1", "n2", "n3"))
+                cluster.finalize_membership("n1")
+                self.transitioned = True
+            return replicated
+
+    reader = LinearizableKVReader(kv, ABAReconfiguringReplicator())
+
+    with pytest.raises(ReadMembershipChanged):
+        reader.get("k", max_attempts_per_peer=1)
+
+    assert cluster.voting_configuration == original_configuration
+    assert cluster.voting_configuration is not original_configuration
+    changed = [
+        record for record in sim.trace if record.kind == "raft-linearizable-read-membership-changed"
+    ]
+    assert changed[-1].details["acknowledged_voters"] == ("n1", "n2")
+    assert changed[-1].details["quorum_mode"] == "stable"
     assert not [record for record in sim.trace if record.kind == "raft-linearizable-read"]
     safety.checkpoint()
