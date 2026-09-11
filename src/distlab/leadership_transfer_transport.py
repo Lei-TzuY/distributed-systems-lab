@@ -61,6 +61,8 @@ class LeadershipTransferTransport:
     def send_timeout_now(self, leader_id: str, transferee_id: str, *, term: int) -> int:
         if leader_id not in self.cluster.nodes or transferee_id not in self.cluster.nodes:
             raise ValueError("leadership transfer transport requires known Raft nodes")
+        if leader_id == transferee_id:
+            raise ValueError("leadership transfer endpoints must be distinct")
         leader = self.cluster.node(leader_id)
         if not self.sim.is_alive(leader_id):
             raise RuntimeError("leadership transfer trigger requires a live source leader")
