@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .membership import MembershipChangeError, ReconfigurableRaftCluster, VotingConfiguration
-from .replication import LeaderReplicator
+from .replication import LeaderReplicator, ReplicationError
 
 
 class MembershipAwareLeaderReplicator(LeaderReplicator):
@@ -129,3 +129,11 @@ class MembershipAwareLeaderReplicator(LeaderReplicator):
             if not isinstance(command, (JointConsensusCommand, StableConsensusCommand)):
                 continue
             _persist_membership_commit_watermark(cluster, index=index, command=command)
+
+    def _require_current_leader(self) -> None:
+        super()._require_current_leader()
+        cluster = self.leader.cluster
+        if isinstance(cluster, ReconfigurableRaftCluster) and not cluster.is_voter(
+            self.leader.node_id
+        ):
+            raise ReplicationError("membership-aware replication requires current voter authority")
