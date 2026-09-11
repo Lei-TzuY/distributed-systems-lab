@@ -6,6 +6,7 @@ from distlab.leadership_transfer import (
     LeadershipTransferIncomplete,
     LeadershipTransferTargetUnavailable,
 )
+from distlab.leadership_transfer_transport import LeadershipTransferTransport
 from distlab.membership import ReconfigurableRaftCluster
 from distlab.raft import LogEntry, RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
@@ -79,6 +80,37 @@ def test_transfer_catches_up_target_and_elects_it_in_next_term() -> None:
         "raft-leadership-transfer-ready",
         "raft-leadership-transfer-complete",
     ]
+
+
+def test_timeout_now_rejects_lagging_transferee_before_election_mutation() -> None:
+    sim, cluster = _lagging_transferee_cluster()
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+    source = cluster.node("n1")
+    target = cluster.node("n2")
+    source_term = source.current_term
+    target_term = target.current_term
+
+    LeadershipTransferTransport.for_cluster(cluster).send_timeout_now(
+        source.node_id,
+        target.node_id,
+        term=source_term,
+    )
+    sim.run(max_events=1)
+
+    assert source.role is RaftRole.LEADER
+    assert source.current_term == source_term
+    assert target.role is RaftRole.FOLLOWER
+    assert target.current_term == target_term
+    assert not any(
+        record.kind == "raft-election-start" and record.details["node"] == target.node_id
+        for record in sim.trace
+    )
+    rejections = [record for record in sim.trace if record.kind == "raft-timeout-now-rejected"]
+    assert rejections[-1].details["leader"] == source.node_id
+    assert rejections[-1].details["transferee"] == target.node_id
+    assert rejections[-1].details["reason"] == "transferee-not-caught-up"
+    harness.checkpoint()
 
 
 def test_transfer_rejects_current_leader_as_target() -> None:
