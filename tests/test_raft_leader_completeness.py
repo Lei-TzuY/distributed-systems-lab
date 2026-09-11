@@ -1,5 +1,6 @@
 import pytest
 
+from distlab.log_index import RaftLogView
 from distlab.raft import LogEntry, RaftCluster, RaftRole
 from distlab.raft_invariants import (
     LeaderCompletenessChecker,
@@ -47,6 +48,24 @@ def test_observe_commit_records_entire_newly_committed_prefix() -> None:
     ]
 
 
+def test_observe_commit_uses_absolute_indexes_after_compaction() -> None:
+    sim, cluster, _ = _committed_leader()
+    leader = cluster.node("n1")
+    compacted = leader.log_view.compact_through(1)
+    sim.persistent_state["n1"]["log"] = compacted.entries
+    sim.persistent_state["n1"]["log_base_index"] = compacted.base_index
+    sim.persistent_state["n1"]["log_base_term"] = compacted.base_term
+    checker = LeaderCompletenessChecker()
+
+    checker.observe_commit(leader)
+
+    observed = [
+        (record.index, record.entry.command, record.committed_in_term)
+        for record in checker.committed_entries
+    ]
+    assert observed == [(2, "current", 3)]
+
+
 def test_higher_term_leader_with_committed_prefix_satisfies_invariant() -> None:
     _, cluster, _ = _committed_leader()
     checker = LeaderCompletenessChecker()
@@ -57,6 +76,24 @@ def test_higher_term_leader_with_committed_prefix_satisfies_invariant() -> None:
         node_id="n2",
         log=cluster.node("n2").log,
     )
+
+
+def test_higher_term_compacted_leader_preserves_observed_boundary() -> None:
+    _, cluster, _ = _committed_leader()
+    checker = LeaderCompletenessChecker()
+    leader = cluster.node("n1")
+    checker.observe_commit(leader)
+    compacted = leader.log_view.compact_through(2)
+
+    checker.assert_leader_view(term=4, node_id="n1", log=compacted)
+
+    corrupt_boundary = RaftLogView(
+        base_index=compacted.base_index,
+        base_term=compacted.base_term + 1,
+        entries=compacted.entries,
+    )
+    with pytest.raises(LeaderCompletenessViolation, match="compacted boundary"):
+        checker.assert_leader_view(term=4, node_id="n1", log=corrupt_boundary)
 
 
 def test_higher_term_leader_missing_committed_entry_is_rejected() -> None:
@@ -126,6 +163,23 @@ def test_safety_harness_tracks_commit_across_crash_and_leader_replacement() -> N
     assert replacement.current_term == 4
     harness.checkpoint()
     assert [record.index for record in harness.leader_completeness.committed_entries] == [1, 2]
+
+
+def test_safety_harness_starts_after_compaction_without_misindexing() -> None:
+    sim, cluster, _ = _committed_leader()
+    leader = cluster.node("n1")
+    compacted = leader.log_view.compact_through(1)
+    sim.persistent_state["n1"]["log"] = compacted.entries
+    sim.persistent_state["n1"]["log_base_index"] = compacted.base_index
+    sim.persistent_state["n1"]["log_base_term"] = compacted.base_term
+    harness = RaftSafetyHarness(cluster)
+
+    harness.checkpoint()
+
+    assert [
+        (record.index, record.entry.command)
+        for record in harness.leader_completeness.committed_entries
+    ] == [(2, "current")]
 
 
 def test_safety_harness_rejects_corrupt_replacement_leader_at_checkpoint() -> None:

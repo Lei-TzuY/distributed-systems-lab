@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .log_index import RaftLogView
 from .raft import ElectionSafetyViolation, LogEntry, RaftCluster, RaftNode, RaftRole
 from .state_machine import StateMachineApplier
 
@@ -118,7 +119,9 @@ class LeaderCompletenessChecker:
 
     The checker records committed log positions at the moment a leader advances
     its commit index. Any leader in a strictly higher term must contain the same
-    entry at every previously observed committed index.
+    entry at every previously observed committed index. Compacted prefixes are
+    addressed through ``RaftLogView`` so absolute Raft indexes are never confused
+    with retained-suffix tuple offsets.
     """
 
     def __init__(self) -> None:
@@ -141,8 +144,10 @@ class LeaderCompletenessChecker:
         if previous_commit_index > leader.commit_index:
             raise ValueError("previous_commit_index cannot exceed leader commit index")
 
-        for index in range(previous_commit_index + 1, leader.commit_index + 1):
-            entry = leader.log[index - 1]
+        log = leader.log_view
+        first_observable = max(previous_commit_index + 1, log.first_retained_index)
+        for index in range(first_observable, leader.commit_index + 1):
+            entry = log.entry_at(index)
             existing = self._committed.get(index)
             if existing is not None:
                 if existing.entry != entry:
@@ -163,10 +168,10 @@ class LeaderCompletenessChecker:
     def assert_leader_node(self, leader: RaftNode) -> None:
         if leader.role is not RaftRole.LEADER:
             raise ValueError("node must currently be a leader")
-        self.assert_leader_log(
+        self.assert_leader_view(
             term=leader.current_term,
             node_id=leader.node_id,
-            log=leader.log,
+            log=leader.log_view,
         )
 
     def assert_leader_log(
@@ -176,21 +181,43 @@ class LeaderCompletenessChecker:
         node_id: str,
         log: tuple[LogEntry, ...],
     ) -> None:
+        self.assert_leader_view(
+            term=term,
+            node_id=node_id,
+            log=RaftLogView.uncompacted(log),
+        )
+
+    def assert_leader_view(
+        self,
+        *,
+        term: int,
+        node_id: str,
+        log: RaftLogView,
+    ) -> None:
         if term < 0:
             raise ValueError("leader term must be non-negative")
-        if not all(isinstance(entry, LogEntry) for entry in log):
-            raise TypeError("leader log must contain only LogEntry values")
 
         for observation in self.committed_entries:
             if term <= observation.committed_in_term:
                 continue
-            if len(log) < observation.index:
+            if observation.index < log.base_index:
+                continue
+            if observation.index == log.base_index:
+                if log.base_term != observation.entry.term:
+                    raise LeaderCompletenessViolation(
+                        "Leader Completeness violated: "
+                        f"leader {node_id!r} in term {term} has compacted boundary "
+                        f"term {log.base_term} at committed index {observation.index}, "
+                        f"expected term {observation.entry.term}"
+                    )
+                continue
+            if log.last_index < observation.index:
                 raise LeaderCompletenessViolation(
                     "Leader Completeness violated: "
                     f"leader {node_id!r} in term {term} is missing committed "
                     f"index {observation.index} from term {observation.committed_in_term}"
                 )
-            actual = log[observation.index - 1]
+            actual = log.entry_at(observation.index)
             if actual != observation.entry:
                 raise LeaderCompletenessViolation(
                     "Leader Completeness violated: "
@@ -200,10 +227,10 @@ class LeaderCompletenessChecker:
 
     def assert_recorded_leaders(self, cluster: RaftCluster) -> None:
         for term, node_id in sorted(cluster.leaders_by_term.items()):
-            self.assert_leader_log(
+            self.assert_leader_view(
                 term=term,
                 node_id=node_id,
-                log=cluster.node(node_id).log,
+                log=cluster.node(node_id).log_view,
             )
 
 
