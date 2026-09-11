@@ -2,6 +2,7 @@ import pytest
 
 from distlab.kv import Put, ReplicatedKV
 from distlab.raft import LogEntry, RaftCluster, RaftRole
+from distlab.raft_invariants import RaftSafetyHarness
 from distlab.replication import LeaderReplicator, ReplicationResponseMissing
 from distlab.simulator import Simulator
 from distlab.snapshot import KVSnapshotStore
@@ -75,3 +76,70 @@ def test_old_same_boundary_response_cannot_override_new_snapshot_attempt() -> No
 
     cluster.assert_log_matching()
     kv.applier.assert_state_machine_safety()
+
+
+def test_new_replicator_does_not_reuse_snapshot_request_id() -> None:
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    harness = RaftSafetyHarness(cluster)
+    leader = cluster.node("n1")
+    leader.start_election()
+    sim.run()
+    assert leader.role is RaftRole.LEADER
+
+    for index in range(1, 5):
+        leader._persist_log(
+            (*leader.log, LogEntry(term=leader.current_term, command=Put("k", f"v{index}")))
+        )
+
+    initial = LeaderReplicator(leader)
+    assert initial.replicate("n2") is True
+    kv = ReplicatedKV(cluster)
+    kv.apply_committed("n1")
+    store = KVSnapshotStore(cluster, kv)
+    snapshot = store.compact("n1")
+    transport = SnapshotTransport(store)
+    first = LeaderReplicator(leader, snapshot_transport=transport)
+    successor = LeaderReplicator(leader, snapshot_transport=transport)
+
+    assert first.replicate("n3", max_attempts=1) is False
+    assert successor.replicate("n3", max_attempts=1) is False
+    assert first.progress("n3").next_index == snapshot.last_included_index
+    assert successor.progress("n3").next_index == snapshot.last_included_index
+
+    sim.partition(("n1",), ("n3",))
+    with pytest.raises(ReplicationResponseMissing, match="no InstallSnapshot response"):
+        first.replicate("n3", max_attempts=1)
+    sim.heal_partition(("n1",), ("n3",))
+
+    sim.send(
+        "n3",
+        "n1",
+        InstallSnapshotResponse(
+            term=leader.current_term,
+            leader_id="n1",
+            follower_id="n3",
+            success=False,
+            last_included_index=0,
+            requested_last_included_index=snapshot.last_included_index,
+            request_id=1,
+        ),
+        delay=100,
+        delivery_dst=transport.endpoint("n1"),
+    )
+
+    assert successor.replicate("n3", max_attempts=1) is True
+    assert successor.progress("n3").match_index == snapshot.last_included_index
+    assert successor.progress("n3").next_index == snapshot.last_included_index + 1
+    assert cluster.node("n3").log_base_index == snapshot.last_included_index
+    assert kv.snapshot("n3") == {"k": "v4"}
+
+    attempts = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-replication-snapshot"
+        and record.details["leader"] == "n1"
+        and record.details["follower"] == "n3"
+    ]
+    assert [record.details["request_id"] for record in attempts] == [1, 2]
+    harness.checkpoint()
