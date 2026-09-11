@@ -1,7 +1,7 @@
 from distlab.leadership_transfer import LeadershipTransfer
 from distlab.leadership_transfer_transport import LeadershipTransferTransport, TimeoutNow
 from distlab.membership import ReconfigurableRaftCluster
-from distlab.raft import RaftCluster, RaftRole
+from distlab.raft import LogEntry, RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import FaultAction, FaultPlan, FaultRule, Simulator
 
@@ -92,6 +92,45 @@ def test_cancelled_timeout_now_attempt_cannot_trigger_later_election() -> None:
     assert rejected[-1].details["term"] == 1
     assert rejected[-1].details["attempt_id"] == attempt_id
     assert rejected[-1].details["reason"] == "stale-transfer-attempt"
+    harness.checkpoint()
+
+
+def test_timeout_now_rejects_matching_terminal_metadata_with_divergent_retained_log() -> None:
+    sim = Simulator()
+    common_log = (
+        LogEntry(term=1, command="a"),
+        LogEntry(term=1, command="b"),
+    )
+    for node_id in ("n1", "n2", "n3"):
+        sim.persistent_state[node_id]["log"] = common_log
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    cluster.node("n1").start_election()
+    sim.run()
+    assert cluster.node("n1").role is RaftRole.LEADER
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+
+    target = cluster.node("n2")
+    assert target.last_log_index == cluster.node("n1").last_log_index == 2
+    assert target.last_log_term == cluster.node("n1").last_log_term == 1
+    sim.persistent_state["n2"]["log"] = (
+        LogEntry(term=1, command="corrupt-a"),
+        common_log[1],
+    )
+
+    transport = LeadershipTransferTransport.for_cluster(cluster)
+    transport.send_timeout_now("n1", "n2", term=1)
+    sim.run(max_events=1)
+
+    assert cluster.node("n1").role is RaftRole.LEADER
+    assert cluster.node("n1").current_term == 1
+    assert target.role is RaftRole.FOLLOWER
+    assert target.current_term == 1
+    assert not any(record.kind == "raft-timeout-now-delivered" for record in sim.trace)
+    rejected = [record for record in sim.trace if record.kind == "raft-timeout-now-rejected"]
+    assert rejected[-1].details["reason"] == "transferee-log-mismatch"
+
+    sim.persistent_state["n2"]["log"] = common_log
     harness.checkpoint()
 
 
