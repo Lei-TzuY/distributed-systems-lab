@@ -42,6 +42,9 @@ class LeadershipTransferTransport:
         self.sim = cluster.sim
         self._next_attempt_id = 0
         self._active_attempts: dict[int, tuple[str, str, int]] = {}
+        self._attempt_configurations: dict[
+            int, tuple[frozenset[str], frozenset[str] | None] | None
+        ] = {}
         for node_id in self.cluster.node_ids:
             self.sim.register(self.endpoint(node_id), self._handle_message)
 
@@ -86,6 +89,7 @@ class LeadershipTransferTransport:
         self._next_attempt_id += 1
         attempt_id = self._next_attempt_id
         self._active_attempts[attempt_id] = (leader_id, transferee_id, term)
+        self._attempt_configurations[attempt_id] = self._configuration_identity()
         self.sim._record(
             "raft-timeout-now-request",
             leader=leader_id,
@@ -108,6 +112,7 @@ class LeadershipTransferTransport:
 
     def cancel_timeout_now(self, attempt_id: int) -> bool:
         identity = self._active_attempts.pop(attempt_id, None)
+        self._attempt_configurations.pop(attempt_id, None)
         if identity is None:
             return False
         leader_id, transferee_id, term = identity
@@ -126,6 +131,14 @@ class LeadershipTransferTransport:
             if active_leader == leader_id and active_term == term:
                 return attempt_id, transferee_id
         return None
+
+    def _configuration_identity(
+        self,
+    ) -> tuple[frozenset[str], frozenset[str] | None] | None:
+        if not isinstance(self.cluster, ReconfigurableRaftCluster):
+            return None
+        configuration = self.cluster.voting_configuration
+        return configuration.old_voters, configuration.new_voters
 
     def _handle_message(self, sim: Simulator, message: Message) -> None:
         if sim is not self.sim:
@@ -201,9 +214,14 @@ class LeadershipTransferTransport:
                 and request.transferee_id not in configuration.new_voters
             ):
                 reason = "transferee-outgoing-only"
+            elif self._attempt_configurations.get(
+                request.attempt_id
+            ) != self._configuration_identity():
+                reason = "membership-configuration-changed"
 
         if active_identity == (request.leader_id, request.transferee_id, request.term):
             self._active_attempts.pop(request.attempt_id, None)
+            self._attempt_configurations.pop(request.attempt_id, None)
 
         if reason is not None:
             self.sim._record(
