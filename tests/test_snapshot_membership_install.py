@@ -6,7 +6,11 @@ from distlab.raft import RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
 from distlab.snapshot import KVSnapshot, KVSnapshotStore, SnapshotVotingConfiguration
-from distlab.snapshot_transport import InstallSnapshotResponse, SnapshotTransport
+from distlab.snapshot_transport import (
+    InstallSnapshotRequest,
+    InstallSnapshotResponse,
+    SnapshotTransport,
+)
 
 
 def _snapshot(
@@ -91,12 +95,17 @@ def test_transport_returns_failure_for_rejected_membership_snapshot() -> None:
     safety = RaftSafetyHarness(cluster)
     safety.checkpoint()
 
-    transport.send_install_snapshot(
-        leader_id="n1",
-        follower_id="n2",
-        term=1,
-        snapshot=_snapshot(boundary=3, membership_index=1, voters=("n1", "n2")),
-        request_id=7,
+    sim.send(
+        "n1",
+        "n2",
+        InstallSnapshotRequest(
+            leader_id="n1",
+            follower_id="n2",
+            term=1,
+            snapshot=_snapshot(boundary=3, membership_index=1, voters=("n1", "n2")),
+            request_id=7,
+        ),
+        delivery_dst=transport.endpoint("n2"),
     )
     sim.run()
 
@@ -127,12 +136,17 @@ def test_delayed_snapshot_from_removed_voter_is_rejected_before_term_adoption() 
     safety = RaftSafetyHarness(cluster)
     safety.checkpoint()
 
-    transport.send_install_snapshot(
-        leader_id="n2",
-        follower_id="n1",
-        term=5,
-        snapshot=_snapshot(boundary=1, membership_index=0, voters=("n1", "n2")),
-        request_id=11,
+    sim.send(
+        "n2",
+        "n1",
+        InstallSnapshotRequest(
+            leader_id="n2",
+            follower_id="n1",
+            term=5,
+            snapshot=_snapshot(boundary=1, membership_index=0, voters=("n1", "n2")),
+            request_id=11,
+        ),
+        delivery_dst=transport.endpoint("n1"),
     )
     cluster._install_voting_configuration(
         VotingConfiguration(frozenset({"n1"})),
