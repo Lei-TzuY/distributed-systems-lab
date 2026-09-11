@@ -111,9 +111,14 @@ def test_timeout_now_serializes_overlapping_attempts_for_same_leader_term() -> N
     assert cluster.node("n1").current_term == 1
     assert cluster.node("n2").role is RaftRole.FOLLOWER
     assert cluster.node("n3").role is RaftRole.FOLLOWER
-    assert not any(record.kind == "raft-election-start" and record.details["node"] == "n3" for record in sim.trace)
+    assert not any(
+        record.kind == "raft-election-start" and record.details["node"] == "n3"
+        for record in sim.trace
+    )
 
-    rejected = [record for record in sim.trace if record.kind == "raft-timeout-now-request-rejected"]
+    rejected = [
+        record for record in sim.trace if record.kind == "raft-timeout-now-request-rejected"
+    ]
     assert rejected[-1].details == {
         "leader": "n1",
         "transferee": "n3",
