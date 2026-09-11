@@ -187,8 +187,6 @@ class LeadershipTransferTransport:
         active_identity = self._active_attempts.get(request.attempt_id)
         if active_identity != (request.leader_id, request.transferee_id, request.term):
             reason = "stale-transfer-attempt"
-        elif self._attempt_configurations.get(request.attempt_id) != self._configuration_identity():
-            reason = "membership-configuration-changed"
         elif not self.sim.is_alive(request.transferee_id):
             reason = "transferee-crashed"
         elif not self.sim.is_alive(request.leader_id):
@@ -216,6 +214,10 @@ class LeadershipTransferTransport:
                 and request.transferee_id not in configuration.new_voters
             ):
                 reason = "transferee-outgoing-only"
+            elif self._attempt_configurations.get(
+                request.attempt_id
+            ) != self._configuration_identity():
+                reason = "membership-configuration-changed"
 
         if active_identity == (request.leader_id, request.transferee_id, request.term):
             self._active_attempts.pop(request.attempt_id, None)
