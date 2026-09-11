@@ -18,6 +18,10 @@ class SessionWritePending(ClientSessionError):
     """Raised when another session operation would overtake a pending write."""
 
 
+class SessionReadPending(ClientSessionError):
+    """Raised when another session operation would overtake a pending read."""
+
+
 class StaleClientRequest(ClientSessionError):
     """Raised when a completed request id is reused as a new logical write."""
 
@@ -28,17 +32,24 @@ class PendingSessionWrite:
     request: ClientRequest
 
 
+@dataclass(frozen=True, slots=True)
+class PendingSessionRead:
+    operation_id: str
+    key: str
+
+
 class KVClientSession:
     """Single-flight monotonic request sequencing for one logical KV client.
 
     Exact retries reuse the active ``ClientRequest`` through ``retry_write``.
     A new logical write must use a request id strictly greater than the most
     recently completed request. Linearizable reads are routed through the real
-    Raft read barrier and cannot overtake a pending write, preserving client
-    program order across writes and reads. Sessions may be reconstructed from a
-    replica's applied deduplication state, including state restored from a
-    durable KV snapshot; ``recover_linearizable`` should be used when recovery
-    must not trust a potentially stale replica.
+    Raft read barrier and cannot overtake a pending write. Failed reads remain
+    the active session operation and may be retried exactly without creating a
+    second history invocation, preserving client program order across failures.
+    Sessions may be reconstructed from a replica's applied deduplication state,
+    including state restored from a durable KV snapshot; ``recover_linearizable``
+    should be used when recovery must not trust a potentially stale replica.
     """
 
     def __init__(
@@ -56,6 +67,7 @@ class KVClientSession:
         self.client_id = client_id
         self.last_completed_request_id = last_completed_request_id
         self._pending: PendingSessionWrite | None = None
+        self._pending_read: PendingSessionRead | None = None
 
     @classmethod
     def recover(
@@ -123,6 +135,11 @@ class KVClientSession:
                 f"client {self.client_id!r} already has pending write "
                 f"{self._pending.operation_id!r}"
             )
+        if self._pending_read is not None:
+            raise SessionReadPending(
+                f"client {self.client_id!r} cannot write while read "
+                f"{self._pending_read.operation_id!r} is pending"
+            )
         if request_id <= self.last_completed_request_id:
             raise StaleClientRequest(
                 f"client {self.client_id!r} request_id {request_id} is not newer than "
@@ -167,7 +184,9 @@ class KVClientSession:
         """Execute a client-program-ordered linearizable read.
 
         A pending write must first complete (or be retried to completion) so a
-        later read cannot appear before it in the client-visible history.
+        later read cannot appear before it in the client-visible history. If the
+        read barrier fails, the same read remains pending and blocks later
+        session operations until ``retry_linearizable_read`` completes it.
         """
 
         if self._pending is not None:
@@ -175,19 +194,60 @@ class KVClientSession:
                 f"client {self.client_id!r} cannot read while write "
                 f"{self._pending.operation_id!r} is pending"
             )
-        return self.clients.linearizable_read(
+        if self._pending_read is not None:
+            raise SessionReadPending(
+                f"client {self.client_id!r} already has pending read "
+                f"{self._pending_read.operation_id!r}"
+            )
+        self._pending_read = PendingSessionRead(operation_id, key)
+        try:
+            result = self.clients.linearizable_read(
+                operation_id,
+                self.client_id,
+                reader,
+                key,
+                max_attempts_per_peer=max_attempts_per_peer,
+            )
+        except Exception:
+            raise
+        else:
+            self._pending_read = None
+            return result
+
+    def retry_linearizable_read(
+        self,
+        operation_id: str,
+        reader: LinearizableKVReader,
+        *,
+        max_attempts_per_peer: int = 1,
+    ) -> str | None:
+        """Retry the exact pending read without creating a new history invocation."""
+
+        pending = self._require_pending_read(operation_id)
+        result = self.clients.retry_linearizable_read(
             operation_id,
             self.client_id,
             reader,
-            key,
+            pending.key,
             max_attempts_per_peer=max_attempts_per_peer,
         )
+        self._pending_read = None
+        return result
 
     def pending_write(self) -> PendingSessionWrite | None:
         return self._pending
+
+    def pending_read(self) -> PendingSessionRead | None:
+        return self._pending_read
 
     def _require_pending(self, operation_id: str) -> PendingSessionWrite:
         pending = self._pending
         if pending is None or pending.operation_id != operation_id:
             raise ValueError(f"unknown pending session write {operation_id!r}")
+        return pending
+
+    def _require_pending_read(self, operation_id: str) -> PendingSessionRead:
+        pending = self._pending_read
+        if pending is None or pending.operation_id != operation_id:
+            raise ValueError(f"unknown pending session read {operation_id!r}")
         return pending
