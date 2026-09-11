@@ -12,6 +12,7 @@ class TimeoutNow:
     term: int
     leader_id: str
     transferee_id: str
+    attempt_id: int
 
     def __post_init__(self) -> None:
         if self.term < 0:
@@ -20,6 +21,8 @@ class TimeoutNow:
             raise ValueError("leadership transfer endpoints must be non-empty")
         if self.leader_id == self.transferee_id:
             raise ValueError("leadership transfer endpoints must be distinct")
+        if self.attempt_id <= 0:
+            raise ValueError("leadership transfer attempt id must be positive")
 
 
 class LeadershipTransferTransport:
@@ -37,6 +40,8 @@ class LeadershipTransferTransport:
     def __init__(self, cluster: RaftCluster) -> None:
         self.cluster = cluster
         self.sim = cluster.sim
+        self._next_attempt_id = 0
+        self._active_attempts: dict[int, tuple[str, str, int]] = {}
         for node_id in self.cluster.node_ids:
             self.sim.register(self.endpoint(node_id), self._handle_message)
 
@@ -53,7 +58,7 @@ class LeadershipTransferTransport:
     def endpoint(cls, node_id: str) -> str:
         return f"{cls._PREFIX}:{node_id}"
 
-    def send_timeout_now(self, leader_id: str, transferee_id: str, *, term: int) -> None:
+    def send_timeout_now(self, leader_id: str, transferee_id: str, *, term: int) -> int:
         if leader_id not in self.cluster.nodes or transferee_id not in self.cluster.nodes:
             raise ValueError("leadership transfer transport requires known Raft nodes")
         leader = self.cluster.node(leader_id)
@@ -61,18 +66,42 @@ class LeadershipTransferTransport:
             raise RuntimeError("leadership transfer trigger requires a live source leader")
         if leader.role is not RaftRole.LEADER or leader.current_term != term:
             raise RuntimeError("leadership transfer trigger requires current leader authority")
+        self._next_attempt_id += 1
+        attempt_id = self._next_attempt_id
+        self._active_attempts[attempt_id] = (leader_id, transferee_id, term)
         self.sim._record(
             "raft-timeout-now-request",
             leader=leader_id,
             transferee=transferee_id,
             term=term,
+            attempt_id=attempt_id,
         )
         self.sim.send(
             leader_id,
             transferee_id,
-            TimeoutNow(term=term, leader_id=leader_id, transferee_id=transferee_id),
+            TimeoutNow(
+                term=term,
+                leader_id=leader_id,
+                transferee_id=transferee_id,
+                attempt_id=attempt_id,
+            ),
             delivery_dst=self.endpoint(transferee_id),
         )
+        return attempt_id
+
+    def cancel_timeout_now(self, attempt_id: int) -> bool:
+        identity = self._active_attempts.pop(attempt_id, None)
+        if identity is None:
+            return False
+        leader_id, transferee_id, term = identity
+        self.sim._record(
+            "raft-timeout-now-cancelled",
+            leader=leader_id,
+            transferee=transferee_id,
+            term=term,
+            attempt_id=attempt_id,
+        )
+        return True
 
     def _handle_message(self, sim: Simulator, message: Message) -> None:
         if sim is not self.sim:
@@ -108,6 +137,7 @@ class LeadershipTransferTransport:
             leader=request.leader_id,
             transferee=request.transferee_id,
             term=request.term,
+            attempt_id=request.attempt_id,
             expected_delivery_dst=expected_delivery_dst,
             reason=reason,
         )
@@ -117,7 +147,10 @@ class LeadershipTransferTransport:
         target = self.cluster.node(request.transferee_id)
         leader = self.cluster.node(request.leader_id)
         reason: str | None = None
-        if not self.sim.is_alive(request.transferee_id):
+        active_identity = self._active_attempts.get(request.attempt_id)
+        if active_identity != (request.leader_id, request.transferee_id, request.term):
+            reason = "stale-transfer-attempt"
+        elif not self.sim.is_alive(request.transferee_id):
             reason = "transferee-crashed"
         elif not self.sim.is_alive(request.leader_id):
             reason = "source-leader-crashed"
@@ -143,12 +176,16 @@ class LeadershipTransferTransport:
             ):
                 reason = "transferee-outgoing-only"
 
+        if active_identity == (request.leader_id, request.transferee_id, request.term):
+            self._active_attempts.pop(request.attempt_id, None)
+
         if reason is not None:
             self.sim._record(
                 "raft-timeout-now-rejected",
                 leader=request.leader_id,
                 transferee=request.transferee_id,
                 term=request.term,
+                attempt_id=request.attempt_id,
                 target_term=target.current_term,
                 reason=reason,
             )
@@ -159,5 +196,6 @@ class LeadershipTransferTransport:
             leader=request.leader_id,
             transferee=request.transferee_id,
             term=request.term,
+            attempt_id=request.attempt_id,
         )
         target.start_election()
