@@ -98,6 +98,10 @@ class SnapshotTransport:
         leader = self.cluster.node(leader_id)
         if leader.role is not RaftRole.LEADER or leader.current_term != term:
             raise RuntimeError("InstallSnapshot send requires current leader authority")
+        if isinstance(self.cluster, ReconfigurableRaftCluster) and not self.cluster.is_voter(
+            leader_id
+        ):
+            raise RuntimeError("InstallSnapshot send requires current voter authority")
         self.sim._record(
             "raft-install-snapshot-request",
             leader=leader_id,
