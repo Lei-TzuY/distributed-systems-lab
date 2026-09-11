@@ -105,7 +105,7 @@ class LeaderAppendOnlyChecker:
                 raise LeaderAppendOnlyViolation(
                     "Leader Append-Only violated: "
                     f"leader {leader.node_id!r} in term {leader.current_term} "
-                    f"shrunk its absolute log from index {previous.last_index} "
+                    f"shrunk its log in absolute index space from {previous.last_index} "
                     f"to {current.last_index}"
                 )
             if previous.base_index < current.base_index <= previous.last_index:
@@ -123,7 +123,7 @@ class LeaderAppendOnlyChecker:
                     raise LeaderAppendOnlyViolation(
                         "Leader Append-Only violated: "
                         f"leader {leader.node_id!r} in term {leader.current_term} "
-                        f"overwrote previously observed entry at index {index}"
+                        f"overwrote an entry previously observed at absolute index {index}"
                     )
         self._logs_by_leadership[key] = current
 
