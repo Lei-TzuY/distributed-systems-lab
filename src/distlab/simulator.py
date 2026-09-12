@@ -21,6 +21,7 @@ class FaultRule:
     src: str | None = None
     dst: str | None = None
     ordinal: int | None = None
+    payload_type: str | None = None
     extra_delay: int = 0
 
     def __post_init__(self) -> None:
@@ -28,12 +29,18 @@ class FaultRule:
             raise ValueError("extra_delay must be non-negative")
         if self.ordinal is not None and self.ordinal <= 0:
             raise ValueError("ordinal must be positive when specified")
+        if self.payload_type is not None and not self.payload_type:
+            raise ValueError("payload_type must be non-empty when specified")
 
     def matches(self, message: Message) -> bool:
         return (
             (self.src is None or self.src == message.src)
             and (self.dst is None or self.dst == message.dst)
             and (self.ordinal is None or self.ordinal == message.ordinal)
+            and (
+                self.payload_type is None
+                or self.payload_type == type(message.payload).__name__
+            )
         )
 
 
