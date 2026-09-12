@@ -76,7 +76,10 @@ def test_selective_vote_response_loss_blocks_election_without_blocking_link() ->
     assert cluster.leaders_by_term == {}
     vote_drops = [record for record in sim.trace if record.kind == "drop"]
     assert len(vote_drops) == 2
-    assert all(type(record.details["payload"]).__name__ == "RequestVoteResponse" for record in vote_drops)
+    assert all(
+        type(record.details["payload"]).__name__ == "RequestVoteResponse"
+        for record in vote_drops
+    )
     safety.checkpoint()
 
     sim.fault_plan = FaultPlan()
