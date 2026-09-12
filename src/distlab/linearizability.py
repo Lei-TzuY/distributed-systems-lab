@@ -58,13 +58,17 @@ class OperationHistory:
 
     Sequence numbers are assigned locally in insertion order. Pending invocations
     are retained in the history but may be omitted from a legal linearization,
-    matching the standard completion rule for incomplete histories.
+    matching the standard completion rule for incomplete histories. An invocation
+    may also be marked abandoned when the client deliberately stops awaiting it;
+    abandonment is terminal client metadata, not a fabricated response, so the
+    invocation remains pending and omittable for linearizability checking.
     """
 
     def __init__(self) -> None:
         self._sequence = 0
         self._invocations: dict[str, Invocation] = {}
         self._completions: dict[str, Completion] = {}
+        self._abandoned: set[str] = set()
 
     def invoke(
         self,
@@ -91,6 +95,8 @@ class OperationHistory:
             raise InvalidHistory(f"response without invocation for operation {operation_id!r}")
         if operation_id in self._completions:
             raise InvalidHistory(f"duplicate response for operation {operation_id!r}")
+        if operation_id in self._abandoned:
+            raise InvalidHistory(f"response for abandoned operation {operation_id!r}")
         if isinstance(invocation.operation, (Put, Delete)) and result is not None:
             raise InvalidHistory("Put/Delete responses must be None")
         if (
@@ -103,6 +109,29 @@ class OperationHistory:
         completion = Completion(operation_id, result, self._next_sequence())
         self._completions[operation_id] = completion
         return completion
+
+    def abandon(self, operation_id: str) -> Invocation:
+        """Mark an incomplete invocation as terminal from the client's perspective."""
+
+        invocation = self._invocations.get(operation_id)
+        if invocation is None:
+            raise InvalidHistory(f"abandon without invocation for operation {operation_id!r}")
+        if operation_id in self._completions:
+            raise InvalidHistory(f"cannot abandon completed operation {operation_id!r}")
+        if operation_id in self._abandoned:
+            raise InvalidHistory(f"duplicate abandonment for operation {operation_id!r}")
+        self._abandoned.add(operation_id)
+        return invocation
+
+    def is_abandoned(self, operation_id: str) -> bool:
+        return operation_id in self._abandoned
+
+    def abandoned(self) -> tuple[Invocation, ...]:
+        return tuple(
+            invocation
+            for invocation in self.invocations()
+            if invocation.operation_id in self._abandoned
+        )
 
     def invocations(self) -> tuple[Invocation, ...]:
         return tuple(sorted(self._invocations.values(), key=lambda item: item.sequence))
