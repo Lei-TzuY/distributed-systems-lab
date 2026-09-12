@@ -28,10 +28,11 @@ class KVClientHistory:
         self.kv = kv
         self.sim = kv.sim
         self.history = history if history is not None else OperationHistory()
-        request_ids = getattr(self.history, "_client_request_ids", None)
-        if request_ids is None:
+        try:
+            request_ids = self.history._client_request_ids
+        except AttributeError:
             request_ids = {}
-            setattr(self.history, "_client_request_ids", request_ids)
+            self.history._client_request_ids = request_ids
         self._client_request_ids: dict[str, int] = request_ids
         self._pending_writes: dict[str, ClientRequest] = {}
         for invocation in self.history.pending():
