@@ -16,8 +16,7 @@ def test_rebuilt_client_history_preserves_pending_write_for_exact_retry() -> Non
     sim.run()
     assert leader.role is RaftRole.LEADER
 
-    safety = RaftSafetyHarness(cluster)
-    safety.checkpoint()
+    RaftSafetyHarness(cluster).checkpoint()
     kv = ReplicatedKV(cluster)
     clients = KVClientHistory(kv)
     session = KVClientSession(clients, "writer")
@@ -46,5 +45,5 @@ def test_rebuilt_client_history_preserves_pending_write_for_exact_retry() -> Non
     assert recovered.pending_write() is None
     assert recovered.last_completed_request_id == 7
     assert rebuilt_clients.history.pending() == ()
-    safety.checkpoint()
+    RaftSafetyHarness(cluster).checkpoint()
     assert SingleKeyKVLinearizabilityChecker().check(rebuilt_clients.history).linearizable is True
