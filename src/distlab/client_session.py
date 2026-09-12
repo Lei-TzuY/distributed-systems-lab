@@ -284,6 +284,12 @@ class KVClientSession:
                 raise ClientSessionError(
                     "pending write history is inconsistent with client request state"
                 )
+            if request.request_id < self.last_completed_request_id:
+                raise ClientSessionError(
+                    "pending write request id precedes recovered durable sequence floor: "
+                    f"request_id={request.request_id}, "
+                    f"last_completed_request_id={self.last_completed_request_id}"
+                )
             self._pending = PendingSessionWrite(invocation.operation_id, request)
             kind = "write"
         elif isinstance(operation, Get):
