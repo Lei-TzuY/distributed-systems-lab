@@ -191,8 +191,10 @@ class KVClientSession:
 
         A pending write must first complete (or be retried to completion) so a
         later read cannot appear before it in the client-visible history. If the
-        read barrier fails, the same read remains pending and blocks later
-        session operations until ``retry_linearizable_read`` completes it.
+        read barrier fails after recording the invocation, the same read remains
+        pending and blocks later session operations until
+        ``retry_linearizable_read`` completes it. Validation failures before
+        history mutation do not leave phantom session-local pending state.
         """
 
         if self._pending is not None:
@@ -205,6 +207,9 @@ class KVClientSession:
                 f"client {self.client_id!r} already has pending read "
                 f"{self._pending_read.operation_id!r}"
             )
+        existing_operation_ids = {
+            item.operation_id for item in self.clients.history.invocations()
+        }
         self._pending_read = PendingSessionRead(operation_id, key)
         try:
             result = self.clients.linearizable_read(
@@ -215,6 +220,16 @@ class KVClientSession:
                 max_attempts_per_peer=max_attempts_per_peer,
             )
         except Exception:
+            pending = {
+                item.operation_id: item for item in self.clients.history.pending()
+            }.get(operation_id)
+            if (
+                operation_id in existing_operation_ids
+                or pending is None
+                or pending.client_id != self.client_id
+                or pending.operation != Get(key)
+            ):
+                self._pending_read = None
             raise
         else:
             self._pending_read = None

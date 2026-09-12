@@ -247,3 +247,25 @@ def test_session_recovery_restores_failed_read_for_exact_retry() -> None:
     assert evidence[0].details["operation"] == "read"
     safety.checkpoint()
     assert SingleKeyKVLinearizabilityChecker().check(recovered.clients.history).linearizable is True
+
+
+def test_read_validation_failure_does_not_leave_phantom_pending_session_state() -> None:
+    _, cluster, _, session, _, reader = _ready_session_cluster()
+    _, other_cluster, _, _, _, other_reader = _ready_session_cluster()
+    before = session.clients.history.invocations()
+
+    with pytest.raises(ValueError, match="same replicated KV state"):
+        session.linearizable_read("wrong-reader", other_reader, "x")
+    assert session.pending_read() is None
+    assert session.clients.history.invocations() == before
+
+    with pytest.raises(ValueError, match="KV key must be non-empty"):
+        session.linearizable_read("empty-key", reader, "")
+    assert session.pending_read() is None
+    assert session.clients.history.invocations() == before
+
+    submitted = session.invoke_write("write-after-validation", 1, Put("x", "one"))
+    assert submitted == ClientRequest("writer", 1, Put("x", "one"))
+    assert session.pending_write() is not None
+    RaftSafetyHarness(cluster).checkpoint()
+    RaftSafetyHarness(other_cluster).checkpoint()
