@@ -101,6 +101,14 @@ class ScenarioAction:
         return cls(kind="heal-partition", left=left, right=right)
 
     @classmethod
+    def block_link(cls, src: str, dst: str) -> ScenarioAction:
+        return cls(kind="block-link", src=src, dst=dst)
+
+    @classmethod
+    def heal_link(cls, src: str, dst: str) -> ScenarioAction:
+        return cls(kind="heal-link", src=src, dst=dst)
+
+    @classmethod
     def run(cls, *, max_events: int | None = None) -> ScenarioAction:
         return cls(kind="run", max_events=max_events)
 
@@ -263,6 +271,20 @@ class Simulator:
                 self._blocked_links.discard((dst, src))
         self._record("heal-partition", left=left_nodes, right=right_nodes)
 
+    def block_link(self, src: str, dst: str) -> None:
+        """Drop future messages on one directed logical link until explicitly healed."""
+
+        self._validate_link(src, dst)
+        self._blocked_links.add((src, dst))
+        self._record("block-link", src=src, dst=dst)
+
+    def heal_link(self, src: str, dst: str) -> None:
+        """Restore one directed logical link without affecting the reverse direction."""
+
+        self._validate_link(src, dst)
+        self._blocked_links.discard((src, dst))
+        self._record("heal-link", src=src, dst=dst)
+
     def is_alive(self, node: str) -> bool:
         return self._alive[node]
 
@@ -319,6 +341,14 @@ class Simulator:
                 self.partition(action.left, action.right)
             elif action.kind == "heal-partition":
                 self.heal_partition(action.left, action.right)
+            elif action.kind == "block-link":
+                if action.src is None or action.dst is None:
+                    raise ValueError("block-link action requires src and dst")
+                self.block_link(action.src, action.dst)
+            elif action.kind == "heal-link":
+                if action.src is None or action.dst is None:
+                    raise ValueError("heal-link action requires src and dst")
+                self.heal_link(action.src, action.dst)
             elif action.kind == "run":
                 self.run(max_events=action.max_events)
             else:
@@ -339,6 +369,13 @@ class Simulator:
         if unknown:
             raise ValueError(f"partition references unknown nodes: {sorted(unknown)!r}")
         return tuple(sorted(left)), tuple(sorted(right))
+
+    def _validate_link(self, src: str, dst: str) -> None:
+        if src == dst:
+            raise ValueError("directional link endpoints must be distinct")
+        unknown = {src, dst} - set(self._handlers)
+        if unknown:
+            raise ValueError(f"directional link references unknown nodes: {sorted(unknown)!r}")
 
     def _schedule(self, message: Message, delay: int) -> None:
         self._sequence += 1

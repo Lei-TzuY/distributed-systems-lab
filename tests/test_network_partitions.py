@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from distlab.raft import RaftCluster, RaftRole
+from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Message, ScenarioAction, Simulator
 
 
@@ -95,3 +96,81 @@ def test_partition_rejects_invalid_groups() -> None:
             pass
         else:
             raise AssertionError(f"invalid partition {left!r}/{right!r} was accepted")
+
+
+def test_directional_link_block_only_drops_one_way_until_healed() -> None:
+    sim = _registered_simulator()
+
+    sim.block_link("a", "b")
+    sim.send("a", "b", "blocked-a-b")
+    sim.send("b", "a", "reverse-still-open")
+    sim.run()
+
+    assert sim.volatile_state["a"]["received"] == ["reverse-still-open"]
+    assert sim.volatile_state["b"].get("received", []) == []
+    assert [record.kind for record in sim.trace].count("partition-drop") == 1
+    assert [record.kind for record in sim.trace].count("block-link") == 1
+
+    sim.heal_link("a", "b")
+    sim.send("a", "b", "healed-a-b")
+    sim.run()
+
+    assert sim.volatile_state["b"]["received"] == ["healed-a-b"]
+    assert [record.kind for record in sim.trace].count("heal-link") == 1
+
+
+def test_directional_link_scenario_replays_exact_trace() -> None:
+    actions = (
+        ScenarioAction.block_link("a", "b"),
+        ScenarioAction.send("a", "b", "blocked"),
+        ScenarioAction.send("b", "a", "reverse"),
+        ScenarioAction.run(),
+        ScenarioAction.heal_link("a", "b"),
+        ScenarioAction.send("a", "b", "healed"),
+    )
+
+    first = _registered_simulator().run_scenario(actions)
+    second = _registered_simulator().run_scenario(actions)
+
+    assert first == second
+    assert [record.kind for record in first].count("partition-drop") == 1
+    assert [record.kind for record in first].count("block-link") == 1
+    assert [record.kind for record in first].count("heal-link") == 1
+
+
+def test_directional_vote_response_loss_prevents_raft_majority_until_healed() -> None:
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    safety = RaftSafetyHarness(cluster)
+    n1 = cluster.node("n1")
+
+    sim.block_link("n2", "n1")
+    sim.block_link("n3", "n1")
+    n1.start_election()
+    sim.run()
+
+    assert n1.role is RaftRole.CANDIDATE
+    assert cluster.leaders_by_term == {}
+    assert len([record for record in sim.trace if record.kind == "partition-drop"]) == 2
+    safety.checkpoint()
+
+    sim.heal_link("n2", "n1")
+    sim.heal_link("n3", "n1")
+    n1.start_election()
+    sim.run()
+
+    assert n1.role is RaftRole.LEADER
+    assert cluster.leaders_by_term == {2: "n1"}
+    safety.checkpoint()
+
+
+def test_directional_link_rejects_invalid_endpoints() -> None:
+    sim = _registered_simulator()
+
+    for src, dst in (("a", "a"), ("a", "missing"), ("missing", "b")):
+        try:
+            sim.block_link(src, dst)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid directional link {src!r}->{dst!r} was accepted")
