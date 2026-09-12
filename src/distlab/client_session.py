@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from .client_history import KVClientHistory
 from .kv import ClientRequest, Delete, Put
+from .linearizability import Get
 
 if TYPE_CHECKING:
     from .linearizable_read import LinearizableKVReader
@@ -50,6 +51,8 @@ class KVClientSession:
     Sessions may be reconstructed from a replica's applied deduplication state,
     including state restored from a durable KV snapshot; ``recover_linearizable``
     should be used when recovery must not trust a potentially stale replica.
+    Recovery also restores an unresolved client invocation from the shared
+    history so reconstructing the session cannot bypass its single-flight fence.
     """
 
     def __init__(
@@ -84,11 +87,13 @@ class KVClientSession:
             client_id,
             last_completed_request_id=last_completed,
         )
+        session._restore_pending_operation()
         clients.sim._record(
             "client-session-recover",
             client_id=client_id,
             node=node_id,
             last_completed_request_id=last_completed,
+            pending_operation=session._pending_operation_id(),
         )
         return session
 
@@ -121,6 +126,7 @@ class KVClientSession:
             term=evidence.term,
             commit_index=evidence.commit_index,
             last_completed_request_id=session.last_completed_request_id,
+            pending_operation=session._pending_operation_id(),
         )
         return session
 
@@ -239,6 +245,51 @@ class KVClientSession:
 
     def pending_read(self) -> PendingSessionRead | None:
         return self._pending_read
+
+    def _restore_pending_operation(self) -> None:
+        pending = [
+            item for item in self.clients.history.pending() if item.client_id == self.client_id
+        ]
+        if not pending:
+            return
+        if len(pending) != 1:
+            raise ClientSessionError(
+                f"client {self.client_id!r} has {len(pending)} unresolved history operations"
+            )
+
+        invocation = pending[0]
+        operation = invocation.operation
+        if isinstance(operation, (Put, Delete)):
+            request = self.clients.pending_write(invocation.operation_id)
+            if (
+                request is None
+                or request.client_id != self.client_id
+                or request.operation != operation
+            ):
+                raise ClientSessionError(
+                    "pending write history is inconsistent with client request state"
+                )
+            self._pending = PendingSessionWrite(invocation.operation_id, request)
+            kind = "write"
+        elif isinstance(operation, Get):
+            self._pending_read = PendingSessionRead(invocation.operation_id, operation.key)
+            kind = "read"
+        else:
+            raise ClientSessionError("unsupported pending client history operation")
+
+        self.clients.sim._record(
+            "client-session-recover-pending",
+            client_id=self.client_id,
+            operation_id=invocation.operation_id,
+            operation=kind,
+        )
+
+    def _pending_operation_id(self) -> str | None:
+        if self._pending is not None:
+            return self._pending.operation_id
+        if self._pending_read is not None:
+            return self._pending_read.operation_id
+        return None
 
     def _require_pending(self, operation_id: str) -> PendingSessionWrite:
         pending = self._pending
