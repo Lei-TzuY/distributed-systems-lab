@@ -11,6 +11,7 @@ from distlab import (
     Simulator,
     SingleKeyKVLinearizabilityChecker,
 )
+from distlab.linearizability import OperationHistory
 
 
 def _kv_with_logs(
@@ -82,6 +83,25 @@ def test_duplicate_active_request_identity_does_not_leave_phantom_invocation() -
     assert tuple(item.operation_id for item in clients.history.pending()) == ("first",)
     assert clients.pending_write("duplicate") is None
     assert clients.history.client_request_id("duplicate") is None
+
+
+def test_completed_active_request_identity_is_rejected_before_history_mutation() -> None:
+    _, _, kv = _kv_with_logs({"n1": ()})
+    history = OperationHistory()
+    history.invoke("completed", "writer", Put("x", "one"))
+    history.attach_client_request_id("completed", 9)
+    history.respond("completed")
+    clients = KVClientHistory(kv, history)
+
+    before = history.invocations()
+    with pytest.raises(InvalidHistory, match="already attached to active operation 'completed'"):
+        clients.invoke_write("duplicate", "writer", 9, Put("x", "two"))
+
+    assert history.invocations() == before
+    assert history.pending() == ()
+    assert clients.pending_write("duplicate") is None
+    assert history.client_request_id("duplicate") is None
+    assert history.client_request_id("completed") == 9
 
 
 def test_timeout_leaves_write_pending_and_linearizability_checker_can_omit_it() -> None:
