@@ -14,7 +14,9 @@ class KVClientHistory:
 
     A write invocation remains pending until a replica has durably applied the
     corresponding ``ClientRequest``. Retries re-submit the exact same pending
-    request without creating a second logical history operation. Reads may be
+    request without creating a second logical history operation. The request-id
+    identity is retained on the shared ``OperationHistory`` so rebuilding this
+    wrapper preserves unresolved writes and exact-retry semantics. Reads may be
     sampled directly from one replica or routed through ``LinearizableKVReader``
     so the recorded client response is backed by the real Raft read barrier.
     Explicitly abandoned linearizable reads remain incomplete evidence in the
@@ -26,7 +28,26 @@ class KVClientHistory:
         self.kv = kv
         self.sim = kv.sim
         self.history = history if history is not None else OperationHistory()
+        try:
+            request_ids = self.history._client_request_ids
+        except AttributeError:
+            request_ids = {}
+            self.history._client_request_ids = request_ids
+        self._client_request_ids: dict[str, int] = request_ids
         self._pending_writes: dict[str, ClientRequest] = {}
+        for invocation in self.history.pending():
+            request_id = self._client_request_ids.get(invocation.operation_id)
+            if request_id is None:
+                continue
+            if not isinstance(invocation.operation, (Put, Delete)):
+                raise ValueError(
+                    "client request identity is attached to a non-write history invocation"
+                )
+            self._pending_writes[invocation.operation_id] = ClientRequest(
+                invocation.client_id,
+                request_id,
+                invocation.operation,
+            )
 
     def invoke_write(
         self,
@@ -39,6 +60,7 @@ class KVClientHistory:
             raise TypeError("write operation must be Put or Delete")
         request = ClientRequest(client_id, request_id, operation)
         self.history.invoke(operation_id, client_id, operation)
+        self._client_request_ids[operation_id] = request_id
         self._pending_writes[operation_id] = request
         self.sim._record(
             "client-invoke",
