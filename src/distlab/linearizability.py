@@ -120,13 +120,17 @@ class OperationHistory:
         return completion
 
     def abandon(self, operation_id: str) -> Invocation:
-        """Mark an incomplete invocation as terminal from the client's perspective."""
+        """Mark an incomplete read invocation as terminal from the client's perspective."""
 
         invocation = self._invocations.get(operation_id)
         if invocation is None:
             raise InvalidHistory(f"abandon without invocation for operation {operation_id!r}")
         if operation_id in self._completions:
             raise InvalidHistory(f"cannot abandon completed operation {operation_id!r}")
+        if isinstance(invocation.operation, (Put, Delete)):
+            raise InvalidHistory(
+                f"cannot abandon unresolved client write {operation_id!r}; exact retry is required"
+            )
         if operation_id in self._abandoned:
             raise InvalidHistory(f"duplicate abandonment for operation {operation_id!r}")
         self._abandoned.add(operation_id)
