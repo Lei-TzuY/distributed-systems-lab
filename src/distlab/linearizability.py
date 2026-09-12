@@ -62,6 +62,12 @@ class OperationHistory:
     may also be marked abandoned when the client deliberately stops awaiting it;
     abandonment is terminal client metadata, not a fabricated response, so the
     invocation remains pending and omittable for linearizability checking.
+
+    Pending client write request IDs are first-class recovery metadata. They may
+    only be attached to unresolved Put/Delete invocations and are retired only
+    after that invocation has a recorded response. This keeps exact-retry identity
+    reconstruction structurally coupled to the history lifecycle instead of
+    relying on wrapper-local or dynamically attached attributes.
     """
 
     def __init__(self) -> None:
@@ -69,6 +75,7 @@ class OperationHistory:
         self._invocations: dict[str, Invocation] = {}
         self._completions: dict[str, Completion] = {}
         self._abandoned: set[str] = set()
+        self._client_request_ids: dict[str, int] = {}
 
     def invoke(
         self,
@@ -122,6 +129,47 @@ class OperationHistory:
             raise InvalidHistory(f"duplicate abandonment for operation {operation_id!r}")
         self._abandoned.add(operation_id)
         return invocation
+
+    def attach_client_request_id(self, operation_id: str, request_id: int) -> None:
+        """Attach exact-retry identity to an unresolved client write invocation."""
+
+        invocation = self._invocations.get(operation_id)
+        if invocation is None:
+            raise InvalidHistory(
+                f"client request identity without invocation for operation {operation_id!r}"
+            )
+        if not isinstance(invocation.operation, (Put, Delete)):
+            raise InvalidHistory("client request identity may only be attached to Put/Delete")
+        if operation_id in self._completions:
+            raise InvalidHistory(
+                f"client request identity cannot be attached after response for {operation_id!r}"
+            )
+        if request_id < 0:
+            raise ValueError("request_id must be non-negative")
+        if operation_id in self._client_request_ids:
+            raise InvalidHistory(
+                f"duplicate client request identity for operation {operation_id!r}"
+            )
+        self._client_request_ids[operation_id] = request_id
+
+    def client_request_id(self, operation_id: str) -> int | None:
+        """Return the recovery request ID attached to an invocation, if any."""
+
+        return self._client_request_ids.get(operation_id)
+
+    def retire_client_request_id(self, operation_id: str) -> int:
+        """Retire exact-retry metadata after the write receives a response."""
+
+        if operation_id not in self._completions:
+            raise InvalidHistory(
+                f"client request identity cannot retire before response for {operation_id!r}"
+            )
+        try:
+            return self._client_request_ids.pop(operation_id)
+        except KeyError as exc:
+            raise InvalidHistory(
+                f"missing client request identity for completed operation {operation_id!r}"
+            ) from exc
 
     def is_abandoned(self, operation_id: str) -> bool:
         return operation_id in self._abandoned
