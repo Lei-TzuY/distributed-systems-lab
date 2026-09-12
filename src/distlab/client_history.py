@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .kv import ClientRequest, ClientRequestConflict, Delete, Put, ReplicatedKV
-from .linearizability import Get, OperationHistory
+from .linearizability import Get, InvalidHistory, OperationHistory
 
 if TYPE_CHECKING:
     from .linearizable_read import LinearizableKVReader
@@ -54,6 +54,7 @@ class KVClientHistory:
         if not isinstance(operation, (Put, Delete)):
             raise TypeError("write operation must be Put or Delete")
         request = ClientRequest(client_id, request_id, operation)
+        self._ensure_client_request_identity_available(client_id, request_id)
         self.history.invoke(operation_id, client_id, operation)
         self.history.attach_client_request_id(operation_id, request_id)
         self._pending_writes[operation_id] = request
@@ -269,6 +270,17 @@ class KVClientHistory:
 
     def pending_write(self, operation_id: str) -> ClientRequest | None:
         return self._pending_writes.get(operation_id)
+
+    def _ensure_client_request_identity_available(self, client_id: str, request_id: int) -> None:
+        for invocation in self.history.pending():
+            if invocation.client_id != client_id:
+                continue
+            if self.history.client_request_id(invocation.operation_id) != request_id:
+                continue
+            raise InvalidHistory(
+                "client request identity is already attached to active operation "
+                f"{invocation.operation_id!r}: client={client_id!r}, request_id={request_id}"
+            )
 
     @staticmethod
     def _operation_name(operation: Put | Delete) -> str:
