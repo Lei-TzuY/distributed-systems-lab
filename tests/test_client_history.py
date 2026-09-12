@@ -2,6 +2,7 @@ import pytest
 
 from distlab import (
     ClientRequest,
+    InvalidHistory,
     KVClientHistory,
     LogEntry,
     Put,
@@ -66,6 +67,21 @@ def test_retry_reuses_one_logical_history_invocation() -> None:
     assert len(clients.history.invocations()) == 1
     assert len(clients.history.completed()) == 1
     assert kv.snapshot("n1") == {"x": "once"}
+
+
+def test_duplicate_active_request_identity_does_not_leave_phantom_invocation() -> None:
+    _, _, kv = _kv_with_logs({"n1": ()})
+    clients = KVClientHistory(kv)
+    clients.invoke_write("first", "writer", 9, Put("x", "one"))
+
+    before = clients.history.invocations()
+    with pytest.raises(InvalidHistory, match="already attached to active operation 'first'"):
+        clients.invoke_write("duplicate", "writer", 9, Put("x", "two"))
+
+    assert clients.history.invocations() == before
+    assert tuple(item.operation_id for item in clients.history.pending()) == ("first",)
+    assert clients.pending_write("duplicate") is None
+    assert clients.history.client_request_id("duplicate") is None
 
 
 def test_timeout_leaves_write_pending_and_linearizability_checker_can_omit_it() -> None:
