@@ -48,6 +48,8 @@ class KVClientSession:
     Raft read barrier and cannot overtake a pending write. Failed reads remain
     the active session operation and may be retried exactly without creating a
     second history invocation, preserving client program order across failures.
+    A caller may explicitly abandon a failed read: the incomplete invocation is
+    retained as correctness evidence but no longer fences later session work.
     Sessions may be reconstructed from a replica's applied deduplication state,
     including state restored from a durable KV snapshot; ``recover_linearizable``
     should be used when recovery must not trust a potentially stale replica.
@@ -192,9 +194,9 @@ class KVClientSession:
         A pending write must first complete (or be retried to completion) so a
         later read cannot appear before it in the client-visible history. If the
         read barrier fails after recording the invocation, the same read remains
-        pending and blocks later session operations until
-        ``retry_linearizable_read`` completes it. Validation failures before
-        history mutation do not leave phantom session-local pending state.
+        pending and blocks later session operations until it is retried or
+        explicitly abandoned. Validation failures before history mutation do
+        not leave phantom session-local pending state.
         """
 
         if self._pending is not None:
@@ -255,6 +257,17 @@ class KVClientSession:
         self._pending_read = None
         return result
 
+    def abandon_linearizable_read(self, operation_id: str) -> None:
+        """Stop retrying a failed read while retaining its incomplete invocation."""
+
+        pending = self._require_pending_read(operation_id)
+        self.clients.abandon_linearizable_read(
+            operation_id,
+            self.client_id,
+            pending.key,
+        )
+        self._pending_read = None
+
     def pending_write(self) -> PendingSessionWrite | None:
         return self._pending
 
@@ -266,7 +279,10 @@ class KVClientSession:
         durable_requests: dict[tuple[str, int], Put | Delete],
     ) -> None:
         pending = [
-            item for item in self.clients.history.pending() if item.client_id == self.client_id
+            item
+            for item in self.clients.history.pending()
+            if item.client_id == self.client_id
+            and not self.clients.is_abandoned_read(item.operation_id)
         ]
         if not pending:
             return
