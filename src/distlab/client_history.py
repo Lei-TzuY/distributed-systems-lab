@@ -272,7 +272,7 @@ class KVClientHistory:
         return self._pending_writes.get(operation_id)
 
     def _ensure_client_request_identity_available(self, client_id: str, request_id: int) -> None:
-        for invocation in self.history.pending():
+        for invocation in self.history.invocations():
             if invocation.client_id != client_id:
                 continue
             if self.history.client_request_id(invocation.operation_id) != request_id:
