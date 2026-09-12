@@ -51,7 +51,7 @@ def test_rebuilt_client_history_preserves_pending_write_for_exact_retry() -> Non
     completed_session = KVClientSession.recover(completed_clients, "writer", "n1")
     assert completed_session.pending_write() is None
     assert completed_session.last_completed_request_id == 7
-    assert "write-7" not in completed_clients._client_request_ids
+    assert completed_clients.history.client_request_id("write-7") is None
 
     RaftSafetyHarness(cluster).checkpoint()
     assert SingleKeyKVLinearizabilityChecker().check(completed_clients.history).linearizable is True
