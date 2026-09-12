@@ -41,3 +41,29 @@ def test_client_request_identity_rejects_invalid_history_surfaces() -> None:
     history.retire_client_request_id("delete-2")
     with pytest.raises(InvalidHistory, match="after response"):
         history.attach_client_request_id("delete-2", 2)
+
+
+def test_unresolved_client_write_cannot_be_abandoned() -> None:
+    history = OperationHistory()
+    history.invoke("put-9", "writer", Put("x", "nine"))
+    history.attach_client_request_id("put-9", 9)
+
+    with pytest.raises(InvalidHistory, match="exact retry is required"):
+        history.abandon("put-9")
+
+    assert history.client_request_id("put-9") == 9
+    assert history.pending()[0].operation_id == "put-9"
+    assert history.abandoned() == ()
+
+    history.respond("put-9")
+    assert history.retire_client_request_id("put-9") == 9
+
+
+def test_unresolved_delete_without_identity_cannot_be_abandoned() -> None:
+    history = OperationHistory()
+    history.invoke("delete-3", "writer", Delete("x"))
+
+    with pytest.raises(InvalidHistory, match="exact retry is required"):
+        history.abandon("delete-3")
+
+    history.respond("delete-3")
