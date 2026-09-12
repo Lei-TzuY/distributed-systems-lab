@@ -64,10 +64,11 @@ class OperationHistory:
     invocation remains pending and omittable for linearizability checking.
 
     Pending client write request IDs are first-class recovery metadata. They may
-    only be attached to unresolved Put/Delete invocations and are retired only
-    after that invocation has a recorded response. This keeps exact-retry identity
-    reconstruction structurally coupled to the history lifecycle instead of
-    relying on wrapper-local or dynamically attached attributes.
+    only be attached to unresolved Put/Delete invocations, each active
+    ``(client_id, request_id)`` identity belongs to exactly one logical operation,
+    and the identity is retired only after that invocation has a recorded response.
+    This keeps exact-retry reconstruction unambiguous and structurally coupled to
+    the history lifecycle instead of relying on wrapper-local attributes.
     """
 
     def __init__(self) -> None:
@@ -76,6 +77,7 @@ class OperationHistory:
         self._completions: dict[str, Completion] = {}
         self._abandoned: set[str] = set()
         self._client_request_ids: dict[str, int] = {}
+        self._active_client_requests: dict[tuple[str, int], str] = {}
 
     def invoke(
         self,
@@ -131,7 +133,7 @@ class OperationHistory:
         return invocation
 
     def attach_client_request_id(self, operation_id: str, request_id: int) -> None:
-        """Attach exact-retry identity to an unresolved client write invocation."""
+        """Attach unique exact-retry identity to an unresolved client write invocation."""
 
         invocation = self._invocations.get(operation_id)
         if invocation is None:
@@ -150,7 +152,16 @@ class OperationHistory:
             raise InvalidHistory(
                 f"duplicate client request identity for operation {operation_id!r}"
             )
+        identity = (invocation.client_id, request_id)
+        existing_operation_id = self._active_client_requests.get(identity)
+        if existing_operation_id is not None:
+            raise InvalidHistory(
+                "client request identity is already attached to active operation "
+                f"{existing_operation_id!r}: client={invocation.client_id!r}, "
+                f"request_id={request_id}"
+            )
         self._client_request_ids[operation_id] = request_id
+        self._active_client_requests[identity] = operation_id
 
     def client_request_id(self, operation_id: str) -> int | None:
         """Return the recovery request ID attached to an invocation, if any."""
@@ -164,12 +175,22 @@ class OperationHistory:
             raise InvalidHistory(
                 f"client request identity cannot retire before response for {operation_id!r}"
             )
+        invocation = self._invocations[operation_id]
         try:
-            return self._client_request_ids.pop(operation_id)
+            request_id = self._client_request_ids.pop(operation_id)
         except KeyError as exc:
             raise InvalidHistory(
                 f"missing client request identity for completed operation {operation_id!r}"
             ) from exc
+        identity = (invocation.client_id, request_id)
+        owner = self._active_client_requests.get(identity)
+        if owner != operation_id:
+            self._client_request_ids[operation_id] = request_id
+            raise InvalidHistory(
+                f"active client request identity owner mismatch for operation {operation_id!r}"
+            )
+        del self._active_client_requests[identity]
+        return request_id
 
     def is_abandoned(self, operation_id: str) -> bool:
         return operation_id in self._abandoned
