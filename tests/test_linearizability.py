@@ -77,6 +77,35 @@ def test_pending_invocation_may_be_omitted_from_completion() -> None:
     assert tuple(item.operation_id for item in history.pending()) == ("pending-put",)
 
 
+def test_active_client_request_identity_is_unique_until_retired() -> None:
+    history = OperationHistory()
+    history.invoke("first", "client-a", Put("x", "one"))
+    history.attach_client_request_id("first", 7)
+    history.invoke("duplicate", "client-a", Put("x", "two"))
+
+    with pytest.raises(InvalidHistory, match="already attached to active operation 'first'"):
+        history.attach_client_request_id("duplicate", 7)
+
+    assert history.client_request_id("first") == 7
+    assert history.client_request_id("duplicate") is None
+
+    history.respond("first")
+    assert history.retire_client_request_id("first") == 7
+    history.attach_client_request_id("duplicate", 7)
+    assert history.client_request_id("duplicate") == 7
+
+
+def test_same_request_id_is_independent_across_clients() -> None:
+    history = OperationHistory()
+    history.invoke("client-a-write", "client-a", Put("x", "one"))
+    history.attach_client_request_id("client-a-write", 3)
+    history.invoke("client-b-write", "client-b", Put("x", "two"))
+    history.attach_client_request_id("client-b-write", 3)
+
+    assert history.client_request_id("client-a-write") == 3
+    assert history.client_request_id("client-b-write") == 3
+
+
 def test_checker_rejects_multi_key_history() -> None:
     history = OperationHistory()
     history.invoke("put-x", "writer", Put("x", "one"))
