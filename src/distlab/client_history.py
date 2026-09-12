@@ -15,13 +15,14 @@ class KVClientHistory:
     A write invocation remains pending until a replica has durably applied the
     corresponding ``ClientRequest``. Retries re-submit the exact same pending
     request without creating a second logical history operation. The request-id
-    identity is retained on the shared ``OperationHistory`` so rebuilding this
-    wrapper preserves unresolved writes and exact-retry semantics. Reads may be
-    sampled directly from one replica or routed through ``LinearizableKVReader``
-    so the recorded client response is backed by the real Raft read barrier.
-    Explicitly abandoned linearizable reads remain incomplete evidence in the
-    shared history, but are terminal from the client API's perspective and are
-    not resurrected when either the client session or history wrapper is rebuilt.
+    identity is retained on the shared ``OperationHistory`` while unresolved so
+    rebuilding this wrapper preserves pending writes and exact-retry semantics.
+    Reads may be sampled directly from one replica or routed through
+    ``LinearizableKVReader`` so the recorded client response is backed by the real
+    Raft read barrier. Explicitly abandoned linearizable reads remain incomplete
+    evidence in the shared history, but are terminal from the client API's
+    perspective and are not resurrected when either the client session or history
+    wrapper is rebuilt.
     """
 
     def __init__(self, kv: ReplicatedKV, history: OperationHistory | None = None) -> None:
@@ -113,6 +114,7 @@ class KVClientHistory:
 
         self.history.respond(operation_id)
         del self._pending_writes[operation_id]
+        del self._client_request_ids[operation_id]
         self.sim._record(
             "client-response",
             operation_id=operation_id,
