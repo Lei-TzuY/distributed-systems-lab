@@ -87,7 +87,7 @@ class KVClientSession:
             client_id,
             last_completed_request_id=last_completed,
         )
-        session._restore_pending_operation()
+        session._restore_pending_operation(requests)
         clients.sim._record(
             "client-session-recover",
             client_id=client_id,
@@ -261,7 +261,10 @@ class KVClientSession:
     def pending_read(self) -> PendingSessionRead | None:
         return self._pending_read
 
-    def _restore_pending_operation(self) -> None:
+    def _restore_pending_operation(
+        self,
+        durable_requests: dict[tuple[str, int], Put | Delete],
+    ) -> None:
         pending = [
             item for item in self.clients.history.pending() if item.client_id == self.client_id
         ]
@@ -290,6 +293,16 @@ class KVClientSession:
                     f"request_id={request.request_id}, "
                     f"last_completed_request_id={self.last_completed_request_id}"
                 )
+            if request.request_id == self.last_completed_request_id:
+                durable_operation = durable_requests.get(
+                    (request.client_id, request.request_id)
+                )
+                if durable_operation != request.operation:
+                    raise ClientSessionError(
+                        "pending write conflicts with durable request identity at recovered "
+                        "sequence floor: "
+                        f"client={request.client_id!r}, request_id={request.request_id}"
+                    )
             self._pending = PendingSessionWrite(invocation.operation_id, request)
             kind = "write"
         elif isinstance(operation, Get):
