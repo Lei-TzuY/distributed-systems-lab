@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from distlab.raft import RaftCluster, RaftRole
+from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Message, ScenarioAction, Simulator
 
 
@@ -140,6 +141,7 @@ def test_directional_link_scenario_replays_exact_trace() -> None:
 def test_directional_vote_response_loss_prevents_raft_majority_until_healed() -> None:
     sim = Simulator()
     cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    safety = RaftSafetyHarness(cluster)
     n1 = cluster.node("n1")
 
     sim.block_link("n2", "n1")
@@ -150,6 +152,7 @@ def test_directional_vote_response_loss_prevents_raft_majority_until_healed() ->
     assert n1.role is RaftRole.CANDIDATE
     assert cluster.leaders_by_term == {}
     assert len([record for record in sim.trace if record.kind == "partition-drop"]) == 2
+    safety.checkpoint()
 
     sim.heal_link("n2", "n1")
     sim.heal_link("n3", "n1")
@@ -158,10 +161,7 @@ def test_directional_vote_response_loss_prevents_raft_majority_until_healed() ->
 
     assert n1.role is RaftRole.LEADER
     assert cluster.leaders_by_term == {2: "n1"}
-    cluster.assert_election_safety()
-    cluster.assert_log_matching()
-    cluster.assert_leader_completeness()
-    cluster.assert_state_machine_safety()
+    safety.checkpoint()
 
 
 def test_directional_link_rejects_invalid_endpoints() -> None:
