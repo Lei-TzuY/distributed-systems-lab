@@ -48,8 +48,17 @@ def test_abandoned_failed_read_releases_session_without_recovery_resurrection() 
     assert session.pending_read() is None
     assert clients.is_abandoned_read("read-1") is True
     assert [item.operation_id for item in clients.history.pending()] == ["read-1"]
+    assert [item.operation_id for item in clients.history.abandoned()] == ["read-1"]
     with pytest.raises(ValueError, match="abandoned linearizable read"):
         clients.retry_linearizable_read("read-1", "writer", reader, "x")
+
+    rebuilt_clients = KVClientHistory(kv, clients.history)
+    assert rebuilt_clients.is_abandoned_read("read-1") is True
+    rebuilt = KVClientSession.recover(rebuilt_clients, "writer", "n1")
+    assert rebuilt.pending_read() is None
+    assert rebuilt.pending_write() is None
+    with pytest.raises(ValueError, match="abandoned linearizable read"):
+        rebuilt_clients.retry_linearizable_read("read-1", "writer", reader, "x")
 
     request2 = session.invoke_write("write-2", 2, Put("x", "two"))
     assert request2.request_id == 2
