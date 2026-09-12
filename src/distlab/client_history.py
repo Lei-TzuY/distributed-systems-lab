@@ -17,6 +17,9 @@ class KVClientHistory:
     request without creating a second logical history operation. Reads may be
     sampled directly from one replica or routed through ``LinearizableKVReader``
     so the recorded client response is backed by the real Raft read barrier.
+    Explicitly abandoned linearizable reads remain incomplete evidence in the
+    history, but are terminal from the client API's perspective and are not
+    resurrected by a reconstructed client session.
     """
 
     def __init__(self, kv: ReplicatedKV, history: OperationHistory | None = None) -> None:
@@ -24,6 +27,7 @@ class KVClientHistory:
         self.sim = kv.sim
         self.history = history if history is not None else OperationHistory()
         self._pending_writes: dict[str, ClientRequest] = {}
+        self._abandoned_reads: set[str] = set()
 
     def invoke_write(
         self,
@@ -174,6 +178,8 @@ class KVClientHistory:
 
         if reader.kv is not self.kv:
             raise ValueError("linearizable reader must use the same replicated KV state")
+        if operation_id in self._abandoned_reads:
+            raise ValueError(f"abandoned linearizable read {operation_id!r} cannot be retried")
         pending = {item.operation_id: item for item in self.history.pending()}.get(operation_id)
         if pending is None:
             raise ValueError(f"unknown pending linearizable read {operation_id!r}")
@@ -197,6 +203,30 @@ class KVClientHistory:
             key,
             max_attempts_per_peer=max_attempts_per_peer,
         )
+
+    def abandon_linearizable_read(self, operation_id: str, client_id: str, key: str) -> None:
+        """Make a failed read terminal while retaining its incomplete history evidence."""
+
+        if operation_id in self._abandoned_reads:
+            raise ValueError(f"linearizable read {operation_id!r} was already abandoned")
+        pending = {item.operation_id: item for item in self.history.pending()}.get(operation_id)
+        if pending is None:
+            raise ValueError(f"unknown pending linearizable read {operation_id!r}")
+        if pending.client_id != client_id or pending.operation != Get(key):
+            raise ValueError("linearizable read abandonment must match the pending invocation")
+        self._abandoned_reads.add(operation_id)
+        self.sim._record(
+            "client-abandon",
+            operation_id=operation_id,
+            client_id=client_id,
+            request_id=None,
+            operation="get",
+            key=key,
+            consistency="linearizable",
+        )
+
+    def is_abandoned_read(self, operation_id: str) -> bool:
+        return operation_id in self._abandoned_reads
 
     def _complete_linearizable_read(
         self,
