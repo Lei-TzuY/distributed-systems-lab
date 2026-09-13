@@ -30,7 +30,9 @@ def test_lifecycle_fault_rejects_unknown_node_without_mutating_state(operation: 
     "action",
     [ScenarioAction.crash("ghost"), ScenarioAction.restart("ghost")],
 )
-def test_replayable_lifecycle_action_rejects_unknown_node_without_trace(action: ScenarioAction) -> None:
+def test_replayable_lifecycle_action_rejects_unknown_node_without_trace(
+    action: ScenarioAction,
+) -> None:
     simulator = _simulator()
 
     with pytest.raises(ValueError, match="references unknown node 'ghost'"):
