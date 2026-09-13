@@ -3,6 +3,7 @@ import pytest
 from distlab import (
     FaultAction,
     FaultOpportunity,
+    FaultRule,
     ScenarioAction,
     SeededFaultGenerator,
     SeededFaultSchedule,
@@ -62,6 +63,39 @@ def test_persisted_schedule_replays_without_using_seed_generation() -> None:
     assert replayed == generated
     assert traces[0] == traces[1]
     assert deliveries[0] == deliveries[1]
+
+
+def test_protocol_selector_survives_persisted_schedule_round_trip() -> None:
+    generated = SeededFaultSchedule(
+        seed=404,
+        rules=(
+            FaultRule(
+                FaultAction.DROP,
+                src="n2",
+                dst="n1",
+                ordinal=7,
+                payload_type="RequestVoteResponse",
+            ),
+        ),
+    )
+
+    replayed = SeededFaultSchedule.from_json(generated.to_json())
+
+    assert replayed == generated
+    assert replayed.rules[0].payload_type == "RequestVoteResponse"
+
+
+def test_legacy_schedule_without_protocol_selector_still_decodes() -> None:
+    encoded = (
+        '{"rules":[{"action":"drop","dst":"b","extra_delay":0,'
+        '"ordinal":1,"src":"a"}],"seed":7,"version":1}'
+    )
+
+    replayed = SeededFaultSchedule.from_json(encoded)
+
+    assert replayed.rules == (
+        FaultRule(FaultAction.DROP, src="a", dst="b", ordinal=1),
+    )
 
 
 def test_different_seeds_are_reproducible_independent_trials() -> None:
