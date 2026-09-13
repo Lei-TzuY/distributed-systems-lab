@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from .simulator import FaultAction, FaultPlan, FaultRule
 
 
-@dataclass(frozen=True, order=True, slots=True)
+@dataclass(frozen=True, slots=True)
 class FaultOpportunity:
     """One concrete message ordinal that may receive a generated fault."""
 
     src: str
     dst: str
     ordinal: int
+    payload_type: str | None = None
 
     def __post_init__(self) -> None:
         if not self.src:
@@ -22,6 +23,8 @@ class FaultOpportunity:
             raise ValueError("dst must be non-empty")
         if self.ordinal <= 0:
             raise ValueError("ordinal must be positive")
+        if self.payload_type is not None and not self.payload_type:
+            raise ValueError("payload_type must be non-empty when specified")
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +130,17 @@ class SeededFaultGenerator:
     ) -> SeededFaultSchedule:
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ValueError("seed must be an integer")
-        canonical = tuple(sorted(opportunities))
+        canonical = tuple(
+            sorted(
+                opportunities,
+                key=lambda opportunity: (
+                    opportunity.src,
+                    opportunity.dst,
+                    opportunity.ordinal,
+                    opportunity.payload_type or "",
+                ),
+            )
+        )
         if len(set(canonical)) != len(canonical):
             raise ValueError("fault opportunities must be unique")
 
@@ -146,6 +159,7 @@ class SeededFaultGenerator:
                         src=opportunity.src,
                         dst=opportunity.dst,
                         ordinal=opportunity.ordinal,
+                        payload_type=opportunity.payload_type,
                     )
                 )
             elif sample < delay_cutoff:
@@ -155,6 +169,7 @@ class SeededFaultGenerator:
                         src=opportunity.src,
                         dst=opportunity.dst,
                         ordinal=opportunity.ordinal,
+                        payload_type=opportunity.payload_type,
                         extra_delay=rng.randint(1, self.max_extra_delay),
                     )
                 )
@@ -165,6 +180,7 @@ class SeededFaultGenerator:
                         src=opportunity.src,
                         dst=opportunity.dst,
                         ordinal=opportunity.ordinal,
+                        payload_type=opportunity.payload_type,
                         extra_delay=rng.randint(1, self.max_extra_delay),
                     )
                 )
