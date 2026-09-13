@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import pytest
 
 from distlab import (
@@ -9,6 +11,16 @@ from distlab import (
     SeededFaultSchedule,
     Simulator,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class Request:
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
+class Response:
+    value: str
 
 
 def _opportunities() -> tuple[FaultOpportunity, ...]:
@@ -131,6 +143,56 @@ def test_generated_rules_target_only_declared_message_ordinals() -> None:
     ]
 
 
+def test_generated_protocol_selector_faults_only_matching_payload_type() -> None:
+    schedule = SeededFaultGenerator(
+        drop_rate=1,
+        delay_rate=0,
+        duplicate_rate=0,
+    ).compile(
+        17,
+        (FaultOpportunity("n1", "n2", 1, payload_type="Response"),),
+    )
+
+    delivered_request: list[object] = []
+    request_sim = Simulator(fault_plan=schedule.to_fault_plan())
+    request_sim.register(
+        "n2",
+        lambda _sim, message: delivered_request.append(message.payload),
+    )
+    request_sim.run_scenario((ScenarioAction.send("n1", "n2", Request("ok")),))
+
+    delivered_response: list[object] = []
+    response_sim = Simulator(fault_plan=schedule.to_fault_plan())
+    response_sim.register(
+        "n2",
+        lambda _sim, message: delivered_response.append(message.payload),
+    )
+    response_sim.run_scenario((ScenarioAction.send("n1", "n2", Response("drop")),))
+
+    assert schedule.rules[0].payload_type == "Response"
+    assert delivered_request == [Request("ok")]
+    assert delivered_response == []
+
+
+def test_protocol_selective_opportunities_are_order_independent() -> None:
+    opportunities = (
+        FaultOpportunity("n1", "n2", 1, payload_type="Response"),
+        FaultOpportunity("n1", "n2", 1, payload_type="Request"),
+        FaultOpportunity("n2", "n1", 2),
+    )
+    generator = SeededFaultGenerator(
+        drop_rate=0.34,
+        delay_rate=0.33,
+        duplicate_rate=0.33,
+    )
+
+    forward = generator.compile(991, opportunities)
+    reverse = generator.compile(991, tuple(reversed(opportunities)))
+
+    assert forward == reverse
+    assert forward.to_json() == reverse.to_json()
+
+
 def test_invalid_generator_and_opportunities_are_rejected() -> None:
     with pytest.raises(ValueError, match="sum"):
         SeededFaultGenerator(drop_rate=0.5, delay_rate=0.5, duplicate_rate=0.1)
@@ -138,6 +200,8 @@ def test_invalid_generator_and_opportunities_are_rejected() -> None:
         SeededFaultGenerator(max_extra_delay=0)
     with pytest.raises(ValueError, match="positive"):
         FaultOpportunity("a", "b", 0)
+    with pytest.raises(ValueError, match="payload_type"):
+        FaultOpportunity("a", "b", 1, payload_type="")
     with pytest.raises(ValueError, match="unique"):
         SeededFaultGenerator().compile(
             1,
