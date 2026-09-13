@@ -116,6 +116,14 @@ class ScenarioAction:
         return cls(kind="heal-link", src=src, dst=dst)
 
     @classmethod
+    def set_link_delay(cls, src: str, dst: str, *, extra_delay: int) -> ScenarioAction:
+        return cls(kind="set-link-delay", src=src, dst=dst, delay=extra_delay)
+
+    @classmethod
+    def clear_link_delay(cls, src: str, dst: str) -> ScenarioAction:
+        return cls(kind="clear-link-delay", src=src, dst=dst)
+
+    @classmethod
     def run(cls, *, max_events: int | None = None) -> ScenarioAction:
         return cls(kind="run", max_events=max_events)
 
@@ -149,6 +157,7 @@ class Simulator:
         self._alive: dict[str, bool] = defaultdict(lambda: True)
         self._send_ordinals: dict[tuple[str, str], int] = defaultdict(int)
         self._blocked_links: set[tuple[str, str]] = set()
+        self._link_delays: dict[tuple[str, str], int] = {}
         self.fault_plan = fault_plan or FaultPlan()
         self.trace: list[TraceRecord] = []
         self.persistent_state: dict[str, dict[str, Any]] = defaultdict(dict)
@@ -235,7 +244,9 @@ class Simulator:
             )
             return
 
-        effective_delay = delay + (rule.extra_delay if rule.action is FaultAction.DELAY else 0)
+        link_delay = self._link_delays.get(key, 0)
+        fault_delay = rule.extra_delay if rule.action is FaultAction.DELAY else 0
+        effective_delay = delay + link_delay + fault_delay
         self._schedule(message, effective_delay)
 
         if rule.action is FaultAction.DUPLICATE:
@@ -291,6 +302,22 @@ class Simulator:
         self._validate_link(src, dst)
         self._blocked_links.discard((src, dst))
         self._record("heal-link", src=src, dst=dst)
+
+    def set_link_delay(self, src: str, dst: str, extra_delay: int) -> None:
+        """Add deterministic latency to future messages on one directed logical link."""
+
+        self._validate_link(src, dst)
+        if extra_delay <= 0:
+            raise ValueError("link extra_delay must be positive")
+        self._link_delays[(src, dst)] = extra_delay
+        self._record("set-link-delay", src=src, dst=dst, extra_delay=extra_delay)
+
+    def clear_link_delay(self, src: str, dst: str) -> None:
+        """Clear persistent latency on one directed logical link."""
+
+        self._validate_link(src, dst)
+        self._link_delays.pop((src, dst), None)
+        self._record("clear-link-delay", src=src, dst=dst)
 
     def is_alive(self, node: str) -> bool:
         return self._alive[node]
@@ -356,6 +383,14 @@ class Simulator:
                 if action.src is None or action.dst is None:
                     raise ValueError("heal-link action requires src and dst")
                 self.heal_link(action.src, action.dst)
+            elif action.kind == "set-link-delay":
+                if action.src is None or action.dst is None:
+                    raise ValueError("set-link-delay action requires src and dst")
+                self.set_link_delay(action.src, action.dst, action.delay)
+            elif action.kind == "clear-link-delay":
+                if action.src is None or action.dst is None:
+                    raise ValueError("clear-link-delay action requires src and dst")
+                self.clear_link_delay(action.src, action.dst)
             elif action.kind == "run":
                 self.run(max_events=action.max_events)
             else:
