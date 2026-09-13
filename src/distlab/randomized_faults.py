@@ -48,6 +48,7 @@ class SeededFaultSchedule:
                     "src": rule.src,
                     "dst": rule.dst,
                     "ordinal": rule.ordinal,
+                    "payload_type": rule.payload_type,
                     "extra_delay": rule.extra_delay,
                 }
                 for rule in self.rules
@@ -76,6 +77,7 @@ class SeededFaultSchedule:
                 src = item["src"]
                 dst = item["dst"]
                 ordinal = item["ordinal"]
+                payload_type = item.get("payload_type")
                 extra_delay = item["extra_delay"]
             except (KeyError, ValueError) as exc:
                 raise ValueError("invalid fault rule") from exc
@@ -83,6 +85,8 @@ class SeededFaultSchedule:
                 raise ValueError("fault rule endpoints must be strings")
             if not isinstance(ordinal, int) or isinstance(ordinal, bool):
                 raise ValueError("fault rule ordinal must be an integer")
+            if payload_type is not None and not isinstance(payload_type, str):
+                raise ValueError("fault rule payload_type must be a string or null")
             if not isinstance(extra_delay, int) or isinstance(extra_delay, bool):
                 raise ValueError("fault rule extra_delay must be an integer")
             decoded.append(
@@ -91,6 +95,7 @@ class SeededFaultSchedule:
                     src=src,
                     dst=dst,
                     ordinal=ordinal,
+                    payload_type=payload_type,
                     extra_delay=extra_delay,
                 )
             )
