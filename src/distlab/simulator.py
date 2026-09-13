@@ -261,11 +261,13 @@ class Simulator:
             )
 
     def crash(self, node: str) -> None:
+        self._validate_node(node, operation="crash")
         self._alive[node] = False
         self.volatile_state[node].clear()
         self._record("crash", node=node)
 
     def restart(self, node: str) -> None:
+        self._validate_node(node, operation="restart")
         self._alive[node] = True
         self.volatile_state[node].clear()
         self._record("restart", node=node)
@@ -411,6 +413,10 @@ class Simulator:
         if unknown:
             raise ValueError(f"partition references unknown nodes: {sorted(unknown)!r}")
         return tuple(sorted(left)), tuple(sorted(right))
+
+    def _validate_node(self, node: str, *, operation: str) -> None:
+        if node not in self._handlers:
+            raise ValueError(f"{operation} references unknown node {node!r}")
 
     def _validate_link(self, src: str, dst: str) -> None:
         if src == dst:

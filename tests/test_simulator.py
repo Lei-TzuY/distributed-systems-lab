@@ -78,6 +78,7 @@ def test_delay_and_duplicate_are_deterministic() -> None:
 
 def test_crash_clears_volatile_but_preserves_persistent_state() -> None:
     sim = Simulator()
+    sim.register("n1", lambda _sim, _message: None)
     sim.persistent_state["n1"]["term"] = 7
     sim.volatile_state["n1"]["leader"] = "n2"
 
