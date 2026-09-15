@@ -164,11 +164,15 @@ class LinkFaultCampaignFailureArtifact:
             leader_id=leader_id,
         )
         if reduction.schedule != self.minimized_link_faults:
-            raise FailureArtifactReplayMismatch("minimized link fault schedule changed during replay")
+            raise FailureArtifactReplayMismatch(
+                "minimized link fault schedule changed during replay"
+            )
         if reduction.kept_original_indices != self.kept_link_fault_action_indices:
             raise FailureArtifactReplayMismatch("kept link fault action set changed during replay")
         if reduction.removed_original_indices != self.removed_link_fault_action_indices:
-            raise FailureArtifactReplayMismatch("removed link fault action set changed during replay")
+            raise FailureArtifactReplayMismatch(
+                "removed link fault action set changed during replay"
+            )
         minimized = ReplicatedKVScenarioRunner(
             self.workload,
             self.faults,
