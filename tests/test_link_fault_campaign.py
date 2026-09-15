@@ -12,8 +12,8 @@ from distlab.link_fault_schedule import (
 )
 from distlab.randomized_faults import SeededFaultGenerator, SeededFaultSchedule
 from distlab.randomized_workload import (
-    ClientActionKind,
-    SeededClientAction,
+    ClientOperationKind,
+    ClientWorkloadAction,
     SeededClientWorkloadGenerator,
     SeededClientWorkloadSchedule,
 )
@@ -24,19 +24,20 @@ def _stale_read_inputs():
     workload = SeededClientWorkloadSchedule(
         seed=41,
         actions=(
-            SeededClientAction(
-                action_id="op-000001",
+            ClientWorkloadAction(
+                operation_id="op-000001",
                 client_id="client",
                 node_id="n1",
-                kind=ClientActionKind.PUT,
+                kind=ClientOperationKind.PUT,
                 key="x",
                 value="one",
+                request_id=1,
             ),
-            SeededClientAction(
-                action_id="op-000002",
+            ClientWorkloadAction(
+                operation_id="op-000002",
                 client_id="client",
                 node_id="n2",
-                kind=ClientActionKind.GET,
+                kind=ClientOperationKind.GET,
                 key="x",
             ),
         ),
