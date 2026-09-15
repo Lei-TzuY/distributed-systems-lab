@@ -1,5 +1,6 @@
 import pytest
 
+from distlab.lifecycle import NodeLifecycleAction, NodeLifecycleKind, SeededLifecycleSchedule
 from distlab.link_fault_schedule import (
     LinkFaultAction,
     LinkFaultKind,
@@ -83,6 +84,48 @@ def test_minimizer_removes_irrelevant_link_transitions_and_is_one_minimal() -> N
         link_faults=SeededLinkFaultSchedule.empty(41),
     ).run()
     assert without_remaining.linearizability.linearizable
+
+
+def test_minimizer_preserves_fixed_lifecycle_schedule_during_reduction() -> None:
+    workload = _workload()
+    faults = SeededFaultSchedule(seed=41, rules=())
+    lifecycle = SeededLifecycleSchedule(
+        seed=41,
+        actions=(
+            NodeLifecycleAction(
+                action_id="crash-n3",
+                node_id="n3",
+                kind=NodeLifecycleKind.CRASH,
+                before_action_index=2,
+            ),
+        ),
+    )
+    link_faults = SeededLinkFaultSchedule(
+        seed=41,
+        actions=(
+            _action("block", LinkFaultKind.BLOCK, 0),
+            _action("heal-after-history", LinkFaultKind.HEAL, 2),
+        ),
+    )
+
+    reduction = NonLinearizableLinkFaultScheduleMinimizer().minimize(
+        workload,
+        faults,
+        link_faults,
+        lifecycle=lifecycle,
+    )
+
+    assert reduction.kept_original_indices == (0,)
+    replay = ReplicatedKVScenarioRunner(
+        workload,
+        faults,
+        lifecycle=lifecycle,
+        link_faults=reduction.schedule,
+    ).run()
+    assert not replay.linearizability.linearizable
+    lifecycle_records = [record for record in replay.trace if record.kind == "scenario-lifecycle"]
+    assert len(lifecycle_records) == 1
+    assert lifecycle_records[0].details["action_id"] == "crash-n3"
 
 
 def test_minimizer_rejects_linearizable_baseline() -> None:
