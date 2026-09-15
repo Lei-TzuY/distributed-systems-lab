@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ._deletion_minimizer import minimize_indexed_sequence
+from .lifecycle import SeededLifecycleSchedule
 from .link_fault_schedule import LinkFaultAction, SeededLinkFaultSchedule
 from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import SeededClientWorkloadSchedule
@@ -32,12 +33,15 @@ class NonLinearizableLinkFaultScheduleMinimizer:
         faults: SeededFaultSchedule,
         link_faults: SeededLinkFaultSchedule,
         *,
+        lifecycle: SeededLifecycleSchedule | None = None,
         node_ids: tuple[str, ...] = ("n1", "n2", "n3"),
         leader_id: str = "n1",
     ) -> LinkFaultScheduleMinimizationResult:
+        lifecycle = lifecycle or SeededLifecycleSchedule.empty(workload.seed)
         baseline = ReplicatedKVScenarioRunner(
             workload,
             faults,
+            lifecycle=lifecycle,
             link_faults=link_faults,
             node_ids=node_ids,
             leader_id=leader_id,
@@ -53,6 +57,7 @@ class NonLinearizableLinkFaultScheduleMinimizer:
                 result = ReplicatedKVScenarioRunner(
                     workload,
                     faults,
+                    lifecycle=lifecycle,
                     link_faults=candidate,
                     node_ids=node_ids,
                     leader_id=leader_id,
