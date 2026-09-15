@@ -94,7 +94,9 @@ class CombinedFaultFailureArtifact:
             faults = SeededFaultSchedule.from_json(json.dumps(raw["faults"]))
             lifecycle = SeededLifecycleSchedule.from_json(json.dumps(raw["lifecycle"]))
             link_faults = SeededLinkFaultSchedule.from_json(json.dumps(raw["link_faults"]))
-            minimized = SeededLinkFaultSchedule.from_json(json.dumps(raw["minimized_link_faults"]))
+            minimized = SeededLinkFaultSchedule.from_json(
+                json.dumps(raw["minimized_link_faults"])
+            )
             kept = tuple(raw["kept_link_fault_action_indices"])
             removed = tuple(raw["removed_link_fault_action_indices"])
             trace_json = json.dumps(raw["trace"], sort_keys=True, separators=(",", ":"))
@@ -103,9 +105,19 @@ class CombinedFaultFailureArtifact:
             raise ValueError("invalid combined fault failure artifact") from exc
         if not isinstance(seed, int) or isinstance(seed, bool):
             raise ValueError("artifact seed must be an integer")
-        if {workload.seed, faults.seed, lifecycle.seed, link_faults.seed, minimized.seed} != {seed}:
+        schedule_seeds = {
+            workload.seed,
+            faults.seed,
+            lifecycle.seed,
+            link_faults.seed,
+            minimized.seed,
+        }
+        if schedule_seeds != {seed}:
             raise ValueError("artifact seed must match all schedule seeds")
-        if any(not isinstance(index, int) or isinstance(index, bool) for index in kept + removed):
+        if any(
+            not isinstance(index, int) or isinstance(index, bool)
+            for index in kept + removed
+        ):
             raise ValueError("artifact link fault indices must be integers")
         if sorted(kept + removed) != list(range(len(link_faults.actions))):
             raise ValueError("artifact link fault indices must partition the original schedule")
