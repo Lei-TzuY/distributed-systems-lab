@@ -10,6 +10,7 @@ from .linearizability import (
     OperationHistory,
     SingleKeyKVLinearizabilityChecker,
 )
+from .link_fault_schedule import LinkFaultKind, SeededLinkFaultSchedule
 from .raft import LogEntry, RaftCluster, RaftRole
 from .raft_invariants import RaftSafetyHarness
 from .randomized_faults import SeededFaultSchedule
@@ -31,11 +32,12 @@ class ReplicatedKVScenarioResult:
 
 
 class ReplicatedKVScenarioRunner:
-    """Replay explicit client, lifecycle, and fault schedules through Raft/KV.
+    """Replay explicit client, lifecycle, link-fault, and message-fault schedules.
 
     The runner is intentionally bounded to the current single-key linearizability
-    foundation. Randomness is never consulted here: workload, lifecycle, and
-    fault inputs must already be compiled into explicit schedules.
+    foundation. Randomness is never consulted here: workload, lifecycle, link
+    fault, and message-fault inputs must already be compiled into explicit
+    schedules.
     """
 
     def __init__(
@@ -44,6 +46,7 @@ class ReplicatedKVScenarioRunner:
         faults: SeededFaultSchedule,
         *,
         lifecycle: SeededLifecycleSchedule | None = None,
+        link_faults: SeededLinkFaultSchedule | None = None,
         node_ids: tuple[str, ...] = ("n1", "n2", "n3"),
         leader_id: str = "n1",
     ) -> None:
@@ -72,9 +75,29 @@ class ReplicatedKVScenarioRunner:
         ):
             raise ValueError("lifecycle action references a workload boundary out of range")
 
+        link_faults = link_faults or SeededLinkFaultSchedule.empty(workload.seed)
+        unknown_link_nodes = sorted(
+            {
+                node_id
+                for action in link_faults.actions
+                for node_id in (action.src, action.dst)
+            }
+            - set(node_ids)
+        )
+        if unknown_link_nodes:
+            raise ValueError(
+                f"link fault schedule references unknown nodes: {unknown_link_nodes!r}"
+            )
+        if any(
+            action.before_action_index > len(workload.actions)
+            for action in link_faults.actions
+        ):
+            raise ValueError("link fault action references a workload boundary out of range")
+
         self.workload = workload
         self.faults = faults
         self.lifecycle = lifecycle
+        self.link_faults = link_faults
         self.node_ids = node_ids
         self.leader_id = leader_id
 
@@ -95,8 +118,15 @@ class ReplicatedKVScenarioRunner:
         kv = ReplicatedKV(cluster, applier=safety.state_machine)
         clients = KVClientHistory(kv)
         lifecycle_position = 0
+        link_fault_position = 0
 
         for action_index, action in enumerate(self.workload.actions):
+            link_fault_position = self._apply_link_fault_boundary(
+                action_index,
+                link_fault_position,
+                sim,
+                safety,
+            )
             lifecycle_position = self._apply_lifecycle_boundary(
                 action_index,
                 lifecycle_position,
@@ -164,12 +194,20 @@ class ReplicatedKVScenarioRunner:
                 request,
             )
 
+        link_fault_position = self._apply_link_fault_boundary(
+            len(self.workload.actions),
+            link_fault_position,
+            sim,
+            safety,
+        )
         self._apply_lifecycle_boundary(
             len(self.workload.actions),
             lifecycle_position,
             sim,
             safety,
         )
+        if link_fault_position != len(self.link_faults.actions):
+            raise AssertionError("link fault schedule was not fully consumed")
         linearizability = SingleKeyKVLinearizabilityChecker().check(clients.history)
         return ReplicatedKVScenarioResult(
             history=clients.history,
@@ -177,6 +215,38 @@ class ReplicatedKVScenarioRunner:
             trace=tuple(sim.trace),
             snapshots={node_id: kv.snapshot(node_id) for node_id in self.node_ids},
         )
+
+    def _apply_link_fault_boundary(
+        self,
+        boundary: int,
+        position: int,
+        sim: Simulator,
+        safety: RaftSafetyHarness,
+    ) -> int:
+        while position < len(self.link_faults.actions):
+            action = self.link_faults.actions[position]
+            if action.before_action_index != boundary:
+                break
+            if action.kind is LinkFaultKind.BLOCK:
+                sim.block_link(action.src, action.dst)
+            elif action.kind is LinkFaultKind.HEAL:
+                sim.heal_link(action.src, action.dst)
+            elif action.kind is LinkFaultKind.SET_DELAY:
+                sim.set_link_delay(action.src, action.dst, action.extra_delay)
+            else:
+                sim.clear_link_delay(action.src, action.dst)
+            sim._record(
+                "scenario-link-fault",
+                action_id=action.action_id,
+                action=action.kind.value,
+                src=action.src,
+                dst=action.dst,
+                before_action_index=boundary,
+                extra_delay=action.extra_delay,
+            )
+            safety.checkpoint()
+            position += 1
+        return position
 
     def _apply_lifecycle_boundary(
         self,
