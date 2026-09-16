@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ._deletion_minimizer import minimize_indexed_sequence
+from .lifecycle import SeededLifecycleSchedule
+from .link_fault_schedule import SeededLinkFaultSchedule
 from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import ClientWorkloadAction, SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioRunner
@@ -20,10 +22,10 @@ class ClientWorkloadMinimizationResult:
 class NonLinearizableClientWorkloadMinimizer:
     """Delete client actions while preserving a non-linearizable scenario failure.
 
-    The fault schedule is held fixed. Candidates are replayed through the same
-    deterministic scenario runner, and reduction never consults randomness. The
-    result is 1-minimal with respect to action deletion: deleting any one
-    remaining client action makes the scenario linearizable.
+    Explicit message, lifecycle, and directional-link fault schedules are held
+    fixed. Candidates are replayed through the same deterministic scenario runner,
+    and reduction never consults randomness. The result is 1-minimal with respect
+    to client-action deletion under those fixed fault schedules.
     """
 
     def minimize(
@@ -31,12 +33,22 @@ class NonLinearizableClientWorkloadMinimizer:
         workload: SeededClientWorkloadSchedule,
         faults: SeededFaultSchedule,
         *,
+        lifecycle: SeededLifecycleSchedule | None = None,
+        link_faults: SeededLinkFaultSchedule | None = None,
         node_ids: tuple[str, ...] = ("n1", "n2", "n3"),
         leader_id: str = "n1",
     ) -> ClientWorkloadMinimizationResult:
+        lifecycle = lifecycle or SeededLifecycleSchedule.empty(workload.seed)
+        link_faults = link_faults or SeededLinkFaultSchedule.empty(workload.seed)
+        seeds = {workload.seed, faults.seed, lifecycle.seed, link_faults.seed}
+        if len(seeds) != 1:
+            raise ValueError("workload and fault schedules must share one seed")
+
         baseline = ReplicatedKVScenarioRunner(
             workload,
             faults,
+            lifecycle=lifecycle,
+            link_faults=link_faults,
             node_ids=node_ids,
             leader_id=leader_id,
         ).run()
@@ -48,6 +60,8 @@ class NonLinearizableClientWorkloadMinimizer:
             result = ReplicatedKVScenarioRunner(
                 candidate,
                 faults,
+                lifecycle=lifecycle,
+                link_faults=link_faults,
                 node_ids=node_ids,
                 leader_id=leader_id,
             ).run()
