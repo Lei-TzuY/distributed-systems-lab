@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from ._deletion_minimizer import minimize_indexed_sequence
 from .lifecycle import NodeLifecycleAction, SeededLifecycleSchedule
+from .link_fault_schedule import SeededLinkFaultSchedule
 from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioRunner, ScenarioExecutionError
@@ -21,10 +22,11 @@ class LifecycleScheduleMinimizationResult:
 class NonLinearizableLifecycleScheduleMinimizer:
     """Delete lifecycle actions while preserving one non-linearizable failure.
 
-    Workload actions, message faults, and lifecycle boundary indices are held
-    fixed. Candidates are replayed through the deterministic scenario runner and
-    never consult randomness. Invalid projections, such as deleting a crash
-    while retaining its restart, are rejected rather than treated as failures.
+    Workload actions, message faults, directional link faults, and lifecycle
+    boundary indices are held fixed. Candidates are replayed through the
+    deterministic scenario runner and never consult randomness. Invalid
+    projections, such as deleting a crash while retaining its restart, are
+    rejected rather than treated as failures.
 
     The result is 1-minimal with respect to lifecycle-action deletion: deleting
     any one remaining lifecycle action either makes the scenario linearizable
@@ -37,6 +39,7 @@ class NonLinearizableLifecycleScheduleMinimizer:
         faults: SeededFaultSchedule,
         lifecycle: SeededLifecycleSchedule,
         *,
+        link_faults: SeededLinkFaultSchedule | None = None,
         node_ids: tuple[str, ...] = ("n1", "n2", "n3"),
         leader_id: str = "n1",
     ) -> LifecycleScheduleMinimizationResult:
@@ -44,6 +47,7 @@ class NonLinearizableLifecycleScheduleMinimizer:
             workload,
             faults,
             lifecycle=lifecycle,
+            link_faults=link_faults,
             node_ids=node_ids,
             leader_id=leader_id,
         ).run()
@@ -59,6 +63,7 @@ class NonLinearizableLifecycleScheduleMinimizer:
                     workload,
                     faults,
                     lifecycle=candidate,
+                    link_faults=link_faults,
                     node_ids=node_ids,
                     leader_id=leader_id,
                 ).run()
