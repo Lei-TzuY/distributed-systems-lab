@@ -4,11 +4,23 @@ from distlab.lifecycle import (
     SeededLifecycleSchedule,
 )
 from distlab.lifecycle_minimizer import NonLinearizableLifecycleScheduleMinimizer
+from distlab.link_fault_schedule import (
+    LinkFaultAction,
+    LinkFaultKind,
+    SeededLinkFaultSchedule,
+)
 from distlab.randomized_faults import (
     FaultOpportunity,
     SeededFaultGenerator,
+    SeededFaultSchedule,
 )
-from distlab.randomized_workload import SeededClientWorkloadGenerator
+from distlab.randomized_workload import (
+    ClientOperationKind,
+    ClientWorkloadAction,
+    SeededClientWorkloadGenerator,
+    SeededClientWorkloadSchedule,
+)
+from distlab.scenario_runner import ReplicatedKVScenarioRunner
 
 
 def _stale_read_inputs():
@@ -101,3 +113,68 @@ def test_minimizer_preserves_original_projection_and_is_one_minimal() -> None:
         reduction.removed_original_indices
     )
     assert reduction.schedule.actions == ()
+
+
+def test_minimizer_preserves_fixed_link_fault_schedule_during_reduction() -> None:
+    workload = SeededClientWorkloadSchedule(
+        seed=41,
+        actions=(
+            ClientWorkloadAction(
+                operation_id="write",
+                client_id="writer",
+                node_id="n1",
+                kind=ClientOperationKind.PUT,
+                key="x",
+                value="one",
+                request_id=1,
+            ),
+            ClientWorkloadAction(
+                operation_id="stale-read",
+                client_id="reader",
+                node_id="n2",
+                kind=ClientOperationKind.GET,
+                key="x",
+            ),
+        ),
+    )
+    faults = SeededFaultSchedule(seed=41, rules=())
+    lifecycle = SeededLifecycleSchedule(
+        seed=41,
+        actions=(
+            NodeLifecycleAction(
+                action_id="crash-n3",
+                node_id="n3",
+                kind=NodeLifecycleKind.CRASH,
+                before_action_index=2,
+            ),
+        ),
+    )
+    link_faults = SeededLinkFaultSchedule(
+        seed=41,
+        actions=(
+            LinkFaultAction(
+                action_id="block",
+                kind=LinkFaultKind.BLOCK,
+                src="n1",
+                dst="n2",
+                before_action_index=0,
+            ),
+        ),
+    )
+
+    reduction = NonLinearizableLifecycleScheduleMinimizer().minimize(
+        workload,
+        faults,
+        lifecycle,
+        link_faults=link_faults,
+    )
+
+    assert reduction.schedule.actions == ()
+    replay = ReplicatedKVScenarioRunner(
+        workload,
+        faults,
+        lifecycle=reduction.schedule,
+        link_faults=link_faults,
+    ).run()
+    assert not replay.linearizability.linearizable
+    assert any(record.kind == "scenario-link-fault" for record in replay.trace)
