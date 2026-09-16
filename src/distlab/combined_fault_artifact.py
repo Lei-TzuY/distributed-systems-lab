@@ -178,7 +178,9 @@ class CombinedFaultFailureArtifact:
         ):
             raise ValueError(f"artifact {label} indices must be integers")
         if sorted(kept + removed) != list(range(len(original))):
-            raise ValueError(f"artifact {label} indices must partition the original schedule")
+            raise ValueError(
+                f"artifact {label} indices must partition the original schedule"
+            )
         if minimized != tuple(original[index] for index in kept):
             raise ValueError(f"artifact minimized {label} schedule must match kept indices")
 
@@ -215,7 +217,10 @@ class CombinedFaultFailureArtifact:
             raise FailureArtifactReplayMismatch("combined lifecycle reduction changed")
         if lifecycle_reduction.kept_original_indices != self.kept_lifecycle_action_indices:
             raise FailureArtifactReplayMismatch("combined kept lifecycle set changed")
-        if lifecycle_reduction.removed_original_indices != self.removed_lifecycle_action_indices:
+        if (
+            lifecycle_reduction.removed_original_indices
+            != self.removed_lifecycle_action_indices
+        ):
             raise FailureArtifactReplayMismatch("combined removed lifecycle set changed")
         link_reduction = NonLinearizableLinkFaultScheduleMinimizer().minimize(
             self.workload,
@@ -240,7 +245,9 @@ class CombinedFaultFailureArtifact:
             leader_id=leader_id,
         ).run()
         if minimized_lifecycle_result.linearizability.linearizable:
-            raise FailureArtifactReplayMismatch("lifecycle-minimized combined scenario became linearizable")
+            raise FailureArtifactReplayMismatch(
+                "lifecycle-minimized combined scenario became linearizable"
+            )
         minimized_link_result = ReplicatedKVScenarioRunner(
             self.workload,
             self.faults,
@@ -250,5 +257,7 @@ class CombinedFaultFailureArtifact:
             leader_id=leader_id,
         ).run()
         if minimized_link_result.linearizability.linearizable:
-            raise FailureArtifactReplayMismatch("link-minimized combined scenario became linearizable")
+            raise FailureArtifactReplayMismatch(
+                "link-minimized combined scenario became linearizable"
+            )
         return result
