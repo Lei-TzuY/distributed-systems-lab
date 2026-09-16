@@ -41,7 +41,7 @@ def _inputs():
             NodeLifecycleAction(
                 action_id="stop-n3",
                 node_id="n3",
-                kind=list(NodeLifecycleKind)[0],
+                kind=next(iter(NodeLifecycleKind)),
                 before_action_index=2,
             ),
         ),
