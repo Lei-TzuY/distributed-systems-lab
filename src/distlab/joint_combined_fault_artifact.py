@@ -84,8 +84,12 @@ class JointCombinedFaultFailureArtifact:
             raise ValueError("unsupported joint combined fault failure artifact format")
         try:
             failure = CombinedFaultFailureArtifact.from_json(json.dumps(raw["failure"]))
-            lifecycle = SeededLifecycleSchedule.from_json(json.dumps(raw["minimized_lifecycle"]))
-            link_faults = SeededLinkFaultSchedule.from_json(json.dumps(raw["minimized_link_faults"]))
+            lifecycle = SeededLifecycleSchedule.from_json(
+                json.dumps(raw["minimized_lifecycle"])
+            )
+            link_faults = SeededLinkFaultSchedule.from_json(
+                json.dumps(raw["minimized_link_faults"])
+            )
             kept_lifecycle = tuple(raw["kept_lifecycle_action_indices"])
             removed_lifecycle = tuple(raw["removed_lifecycle_action_indices"])
             kept_links = tuple(raw["kept_link_fault_action_indices"])
@@ -126,7 +130,9 @@ class JointCombinedFaultFailureArtifact:
         ):
             raise ValueError(f"joint {label} indices must be integers")
         if sorted(kept + removed) != list(range(len(original))):
-            raise ValueError(f"joint {label} indices must partition the original schedule")
+            raise ValueError(
+                f"joint {label} indices must partition the original schedule"
+            )
         if minimized != tuple(original[index] for index in kept):
             raise ValueError(f"joint minimized {label} schedule must match kept indices")
 
