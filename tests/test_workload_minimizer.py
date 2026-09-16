@@ -110,7 +110,7 @@ def test_minimizer_holds_directional_link_faults_fixed() -> None:
         actions=(
             ClientWorkloadAction(
                 operation_id="put",
-                client_id="client",
+                client_id="writer",
                 node_id="n1",
                 kind=ClientOperationKind.PUT,
                 key="x",
@@ -119,14 +119,14 @@ def test_minimizer_holds_directional_link_faults_fixed() -> None:
             ),
             ClientWorkloadAction(
                 operation_id="stale-get",
-                client_id="client",
+                client_id="reader",
                 node_id="n2",
                 kind=ClientOperationKind.GET,
                 key="x",
             ),
             ClientWorkloadAction(
                 operation_id="noise",
-                client_id="client",
+                client_id="reader",
                 node_id="n1",
                 kind=ClientOperationKind.GET,
                 key="unused",
