@@ -1,3 +1,5 @@
+from distlab.lifecycle import SeededLifecycleSchedule
+from distlab.link_fault_schedule import LinkFaultAction, LinkFaultKind, SeededLinkFaultSchedule
 from distlab.randomized_faults import (
     FaultOpportunity,
     SeededFaultGenerator,
@@ -100,3 +102,80 @@ def test_minimizer_rejects_linearizable_baseline() -> None:
         assert "non-linearizable" in str(exc)
     else:
         raise AssertionError("linearizable baseline must be rejected")
+
+
+def test_minimizer_holds_directional_link_faults_fixed() -> None:
+    workload = SeededClientWorkloadSchedule(
+        seed=47,
+        actions=(
+            ClientWorkloadAction(
+                operation_id="put",
+                client_id="writer",
+                node_id="n1",
+                kind=ClientOperationKind.PUT,
+                key="x",
+                value="one",
+                request_id=1,
+            ),
+            ClientWorkloadAction(
+                operation_id="stale-get",
+                client_id="reader",
+                node_id="n2",
+                kind=ClientOperationKind.GET,
+                key="x",
+            ),
+            ClientWorkloadAction(
+                operation_id="noise",
+                client_id="reader",
+                node_id="n1",
+                kind=ClientOperationKind.GET,
+                key="x",
+            ),
+        ),
+    )
+    faults = SeededFaultSchedule(seed=47, rules=())
+    lifecycle = SeededLifecycleSchedule.empty(47)
+    link_faults = SeededLinkFaultSchedule(
+        seed=47,
+        actions=(
+            LinkFaultAction(
+                action_id="partition",
+                kind=LinkFaultKind.BLOCK,
+                src="n1",
+                dst="n2",
+                before_action_index=0,
+            ),
+        ),
+    )
+
+    minimized = NonLinearizableClientWorkloadMinimizer().minimize(
+        workload,
+        faults,
+        lifecycle=lifecycle,
+        link_faults=link_faults,
+    )
+
+    assert minimized.kept_original_indices == (0, 1)
+    assert minimized.removed_original_indices == (2,)
+    replay = ReplicatedKVScenarioRunner(
+        minimized.schedule,
+        faults,
+        lifecycle=lifecycle,
+        link_faults=link_faults,
+    ).run()
+    assert not replay.linearizability.linearizable
+
+
+def test_minimizer_rejects_combined_fault_seed_drift() -> None:
+    workload, faults = _failing_inputs()
+
+    try:
+        NonLinearizableClientWorkloadMinimizer().minimize(
+            workload,
+            faults,
+            link_faults=SeededLinkFaultSchedule.empty(workload.seed + 1),
+        )
+    except ValueError as exc:
+        assert "seed" in str(exc)
+    else:
+        raise AssertionError("combined fault seed drift must be rejected")
