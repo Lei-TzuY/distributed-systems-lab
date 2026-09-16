@@ -90,6 +90,9 @@ def test_combined_failure_artifact_round_trips_and_replays_exact_lifecycle() -> 
 
     assert restored.to_json() == encoded
     assert restored.lifecycle == lifecycle
+    assert restored.minimized_lifecycle.actions == ()
+    assert restored.kept_lifecycle_action_indices == ()
+    assert restored.removed_lifecycle_action_indices == (0,)
     assert restored.kept_link_fault_action_indices == (0,)
     assert restored.removed_link_fault_action_indices == (1,)
     replay = restored.replay()
@@ -121,3 +124,30 @@ def test_combined_failure_artifact_rejects_lifecycle_seed_drift() -> None:
         assert "seed" in str(exc)
     else:
         raise AssertionError("lifecycle seed drift must be rejected")
+
+
+def test_combined_failure_artifact_rejects_lifecycle_reduction_drift() -> None:
+    workload, faults, lifecycle, link_faults = _inputs()
+    result = ReplicatedKVScenarioRunner(
+        workload,
+        faults,
+        lifecycle=lifecycle,
+        link_faults=link_faults,
+    ).run()
+    artifact = CombinedFaultFailureArtifact.capture(
+        workload,
+        faults,
+        lifecycle,
+        link_faults,
+        result,
+    )
+    raw = json.loads(artifact.to_json())
+    raw["kept_lifecycle_action_indices"] = [0]
+    raw["removed_lifecycle_action_indices"] = []
+
+    try:
+        CombinedFaultFailureArtifact.from_json(json.dumps(raw))
+    except ValueError as exc:
+        assert "lifecycle" in str(exc)
+    else:
+        raise AssertionError("lifecycle reduction drift must be rejected")
