@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ._deletion_minimizer import minimize_indexed_sequence
+from .lifecycle import SeededLifecycleSchedule
+from .link_fault_schedule import SeededLinkFaultSchedule
 from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioRunner
@@ -19,13 +21,11 @@ class FaultScheduleMinimizationResult:
 
 
 class NonLinearizableFaultScheduleMinimizer:
-    """Delete fault rules while preserving a non-linearizable scenario failure.
+    """Delete message-fault rules while preserving a non-linearizable failure.
 
-    The minimizer is deliberately narrow: it keeps the client workload fixed and
-    only removes explicit fault rules. Candidates are replayed through the same
-    deterministic scenario runner, so no randomness is consulted during reduction.
-    The result is 1-minimal with respect to rule deletion: removing any one
-    remaining rule makes the scenario linearizable.
+    Optional lifecycle and directional link-fault schedules are held fixed for
+    every candidate. This lets higher-level combined-fault reduction minimize
+    message faults without silently changing the rest of the failure witness.
     """
 
     def minimize(
@@ -33,12 +33,16 @@ class NonLinearizableFaultScheduleMinimizer:
         workload: SeededClientWorkloadSchedule,
         faults: SeededFaultSchedule,
         *,
+        lifecycle: SeededLifecycleSchedule | None = None,
+        link_faults: SeededLinkFaultSchedule | None = None,
         node_ids: tuple[str, ...] = ("n1", "n2", "n3"),
         leader_id: str = "n1",
     ) -> FaultScheduleMinimizationResult:
         baseline = ReplicatedKVScenarioRunner(
             workload,
             faults,
+            lifecycle=lifecycle,
+            link_faults=link_faults,
             node_ids=node_ids,
             leader_id=leader_id,
         ).run()
@@ -50,6 +54,8 @@ class NonLinearizableFaultScheduleMinimizer:
             result = ReplicatedKVScenarioRunner(
                 workload,
                 candidate,
+                lifecycle=lifecycle,
+                link_faults=link_faults,
                 node_ids=node_ids,
                 leader_id=leader_id,
             ).run()

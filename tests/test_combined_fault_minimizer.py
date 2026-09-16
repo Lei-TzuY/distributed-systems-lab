@@ -8,6 +8,7 @@ from distlab.randomized_workload import (
     SeededClientWorkloadSchedule,
 )
 from distlab.scenario_runner import ReplicatedKVScenarioRunner
+from distlab.simulator import FaultAction, FaultRule
 
 
 def test_combined_minimizer_preserves_one_joint_failure_witness() -> None:
@@ -32,7 +33,10 @@ def test_combined_minimizer_preserves_one_joint_failure_witness() -> None:
             ),
         ),
     )
-    faults = SeededFaultSchedule(seed=41, rules=())
+    faults = SeededFaultSchedule(
+        seed=41,
+        rules=(FaultRule(FaultAction.DROP, src="unused", dst="unused"),),
+    )
     lifecycle = SeededLifecycleSchedule(
         seed=41,
         actions=(
@@ -71,6 +75,9 @@ def test_combined_minimizer_preserves_one_joint_failure_witness() -> None:
         link_faults,
     )
 
+    assert reduction.faults.rules == ()
+    assert reduction.kept_fault_original_indices == ()
+    assert reduction.removed_fault_original_indices == (0,)
     assert reduction.lifecycle.actions == ()
     assert reduction.kept_lifecycle_original_indices == ()
     assert reduction.removed_lifecycle_original_indices == (0,)
@@ -80,7 +87,7 @@ def test_combined_minimizer_preserves_one_joint_failure_witness() -> None:
 
     replay = ReplicatedKVScenarioRunner(
         workload,
-        faults,
+        reduction.faults,
         lifecycle=reduction.lifecycle,
         link_faults=reduction.link_faults,
     ).run()
