@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .combined_fault_artifact import CombinedFaultFailureArtifact
+from .joint_combined_fault_artifact import JointCombinedFaultFailureArtifact
 from .lifecycle import SeededLifecycleGenerator
 from .link_fault_schedule import SeededLinkFaultGenerator
 from .randomized_faults import FaultOpportunity, SeededFaultGenerator
@@ -13,7 +13,7 @@ from .scenario_runner import ReplicatedKVScenarioRunner
 @dataclass(frozen=True, slots=True)
 class CombinedFaultScenarioCampaignResult:
     attempted_seeds: tuple[int, ...]
-    failure: CombinedFaultFailureArtifact | None
+    failure: JointCombinedFaultFailureArtifact | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +59,7 @@ class SeededCombinedFaultScenarioCampaign:
             if not result.linearizability.linearizable:
                 return CombinedFaultScenarioCampaignResult(
                     attempted_seeds=tuple(attempted),
-                    failure=CombinedFaultFailureArtifact.capture(
+                    failure=JointCombinedFaultFailureArtifact.capture(
                         workload,
                         faults,
                         lifecycle,
