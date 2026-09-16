@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .fault_schedule_minimizer import NonLinearizableFaultScheduleMinimizer
 from .lifecycle import SeededLifecycleSchedule
 from .lifecycle_minimizer import NonLinearizableLifecycleScheduleMinimizer
 from .link_fault_schedule import SeededLinkFaultSchedule
@@ -13,10 +14,13 @@ from .scenario_runner import ReplicatedKVScenarioRunner
 
 @dataclass(frozen=True, slots=True)
 class CombinedFaultScheduleMinimizationResult:
-    """Deterministic coordinate-wise minimal lifecycle and link-fault witness."""
+    """Deterministic coordinate-wise minimal explicit-fault witness."""
 
+    faults: SeededFaultSchedule
     lifecycle: SeededLifecycleSchedule
     link_faults: SeededLinkFaultSchedule
+    kept_fault_original_indices: tuple[int, ...]
+    removed_fault_original_indices: tuple[int, ...]
     kept_lifecycle_original_indices: tuple[int, ...]
     removed_lifecycle_original_indices: tuple[int, ...]
     kept_link_fault_original_indices: tuple[int, ...]
@@ -24,12 +28,11 @@ class CombinedFaultScheduleMinimizationResult:
 
 
 class NonLinearizableCombinedFaultScheduleMinimizer:
-    """Alternately reduce lifecycle and directional link faults to a fixed point.
+    """Reduce message, lifecycle, and directional link faults to a fixed point.
 
-    Every reduction pass holds the other fault dimension fixed and replays the
-    deterministic scenario. The retained-index projection is carried back to
-    the original schedules, so the resulting witness is reproducible evidence
-    rather than a newly generated randomized scenario.
+    Every reduction pass holds the other fault dimensions fixed and replays the
+    deterministic scenario. Retained-index projections are carried back to the
+    original schedules so the final witness remains exact reproducible evidence.
     """
 
     def minimize(
@@ -58,17 +61,36 @@ class NonLinearizableCombinedFaultScheduleMinimizer:
                 "combined fault schedule minimization requires a non-linearizable scenario"
             )
 
+        current_faults = faults
         current_lifecycle = lifecycle
         current_link_faults = link_faults
+        fault_projection = tuple(range(len(faults.rules)))
         lifecycle_projection = tuple(range(len(lifecycle.actions)))
         link_projection = tuple(range(len(link_faults.actions)))
 
         while True:
-            before = (len(current_lifecycle.actions), len(current_link_faults.actions))
+            before = (
+                len(current_faults.rules),
+                len(current_lifecycle.actions),
+                len(current_link_faults.actions),
+            )
+
+            fault_reduction = NonLinearizableFaultScheduleMinimizer().minimize(
+                workload,
+                current_faults,
+                lifecycle=current_lifecycle,
+                link_faults=current_link_faults,
+                node_ids=node_ids,
+                leader_id=leader_id,
+            )
+            fault_projection = tuple(
+                fault_projection[index] for index in fault_reduction.kept_original_indices
+            )
+            current_faults = fault_reduction.schedule
 
             lifecycle_reduction = NonLinearizableLifecycleScheduleMinimizer().minimize(
                 workload,
-                faults,
+                current_faults,
                 current_lifecycle,
                 link_faults=current_link_faults,
                 node_ids=node_ids,
@@ -82,7 +104,7 @@ class NonLinearizableCombinedFaultScheduleMinimizer:
 
             link_reduction = NonLinearizableLinkFaultScheduleMinimizer().minimize(
                 workload,
-                faults,
+                current_faults,
                 current_link_faults,
                 lifecycle=current_lifecycle,
                 node_ids=node_ids,
@@ -93,21 +115,32 @@ class NonLinearizableCombinedFaultScheduleMinimizer:
             )
             current_link_faults = link_reduction.schedule
 
-            after = (len(current_lifecycle.actions), len(current_link_faults.actions))
+            after = (
+                len(current_faults.rules),
+                len(current_lifecycle.actions),
+                len(current_link_faults.actions),
+            )
             if after == before:
                 break
 
-        kept_lifecycle = lifecycle_projection
-        kept_link_faults = link_projection
         return CombinedFaultScheduleMinimizationResult(
+            faults=current_faults,
             lifecycle=current_lifecycle,
             link_faults=current_link_faults,
-            kept_lifecycle_original_indices=kept_lifecycle,
-            removed_lifecycle_original_indices=tuple(
-                index for index in range(len(lifecycle.actions)) if index not in kept_lifecycle
+            kept_fault_original_indices=fault_projection,
+            removed_fault_original_indices=tuple(
+                index for index in range(len(faults.rules)) if index not in fault_projection
             ),
-            kept_link_fault_original_indices=kept_link_faults,
+            kept_lifecycle_original_indices=lifecycle_projection,
+            removed_lifecycle_original_indices=tuple(
+                index
+                for index in range(len(lifecycle.actions))
+                if index not in lifecycle_projection
+            ),
+            kept_link_fault_original_indices=link_projection,
             removed_link_fault_original_indices=tuple(
-                index for index in range(len(link_faults.actions)) if index not in kept_link_faults
+                index
+                for index in range(len(link_faults.actions))
+                if index not in link_projection
             ),
         )
