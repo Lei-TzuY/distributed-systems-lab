@@ -129,7 +129,7 @@ def test_minimizer_holds_directional_link_faults_fixed() -> None:
                 client_id="reader",
                 node_id="n1",
                 kind=ClientOperationKind.GET,
-                key="unused",
+                key="x",
             ),
         ),
     )
