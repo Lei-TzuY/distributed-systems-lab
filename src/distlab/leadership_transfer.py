@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .leadership_transfer_retry import retry_timeout_now
 from .leadership_transfer_transport import LeadershipTransferTransport
 from .membership import ReconfigurableRaftCluster
 from .membership_replication import MembershipAwareLeaderReplicator
@@ -39,13 +40,7 @@ class LeadershipTransferResult:
 
 
 class LeadershipTransfer:
-    """Move leadership to a caught-up peer through a deterministic Raft election.
-
-    This controller deliberately reuses normal replication and transport paths:
-    the requested transferee is first brought to the leader's complete log/commit
-    prefix, then receives a TimeoutNow-style trigger over the deterministic network.
-    No role or term is assigned directly.
-    """
+    """Move leadership to a caught-up peer through a deterministic Raft election."""
 
     def __init__(
         self,
@@ -63,9 +58,12 @@ class LeadershipTransfer:
         transferee_id: str,
         *,
         max_replication_attempts: int = 8,
+        max_timeout_now_attempts: int = 1,
     ) -> LeadershipTransferResult:
         if max_replication_attempts <= 0:
             raise ValueError("max_replication_attempts must be positive")
+        if max_timeout_now_attempts <= 0:
+            raise ValueError("max_timeout_now_attempts must be positive")
         self._require_current_leader()
         if transferee_id == self.leader.node_id or transferee_id not in self.leader.peers:
             raise InvalidLeadershipTransferTarget(
@@ -78,10 +76,7 @@ class LeadershipTransfer:
                 raise InvalidLeadershipTransferTarget(
                     f"leadership transferee {transferee_id!r} must be an active voter"
                 )
-            if (
-                configuration.new_voters is not None
-                and transferee_id not in configuration.new_voters
-            ):
+            if configuration.new_voters is not None and transferee_id not in configuration.new_voters:
                 raise InvalidLeadershipTransferTarget(
                     f"leadership transferee {transferee_id!r} must belong to the new voter "
                     "configuration during joint consensus"
@@ -174,10 +169,19 @@ class LeadershipTransfer:
             term=previous_term,
         )
         event_budget = max(4, len(cluster.node_ids) * 4)
-        for _ in range(event_budget):
+        for timeout_attempt in range(max_timeout_now_attempts):
+            for _ in range(event_budget):
+                if self._transfer_elected(target, previous_term):
+                    break
+                if self.sim.run(max_events=1) == 0:
+                    break
             if self._transfer_elected(target, previous_term):
                 break
-            if self.sim.run(max_events=1) == 0:
+            if timeout_attempt + 1 >= max_timeout_now_attempts:
+                break
+            try:
+                retry_timeout_now(self.transfer_transport, attempt_id)
+            except (RuntimeError, ValueError):
                 break
 
         if not self._transfer_elected(target, previous_term):
