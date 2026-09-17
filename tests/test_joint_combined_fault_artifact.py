@@ -94,12 +94,24 @@ def test_joint_combined_failure_artifact_round_trips_and_replays() -> None:
     restored = JointCombinedFaultFailureArtifact.from_json(encoded)
 
     assert restored.to_json() == encoded
+    assert restored.minimized_workload == restored.failure.workload
+    assert restored.kept_workload_action_indices == (0, 1)
+    assert restored.removed_workload_action_indices == ()
     assert restored.minimized_lifecycle.actions == ()
     assert restored.kept_lifecycle_action_indices == ()
     assert restored.removed_lifecycle_action_indices == (0,)
     assert restored.kept_link_fault_action_indices == (0,)
     assert restored.removed_link_fault_action_indices == (1,)
     restored.replay()
+
+
+def test_joint_combined_failure_artifact_rejects_workload_projection_drift() -> None:
+    raw = json.loads(_artifact().to_json())
+    raw["kept_workload_action_indices"] = [1]
+    raw["removed_workload_action_indices"] = [0]
+
+    with pytest.raises(ValueError, match="workload"):
+        JointCombinedFaultFailureArtifact.from_json(json.dumps(raw))
 
 
 def test_joint_combined_failure_artifact_rejects_projection_drift() -> None:

@@ -11,6 +11,7 @@ from .link_fault_schedule import SeededLinkFaultSchedule
 from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioResult, ReplicatedKVScenarioRunner
+from .workload_minimizer import NonLinearizableClientWorkloadMinimizer
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,9 +19,12 @@ class JointCombinedFaultFailureArtifact:
     """Persisted exact-replay evidence for a jointly minimized combined failure."""
 
     failure: CombinedFaultFailureArtifact
+    minimized_workload: SeededClientWorkloadSchedule
     minimized_faults: SeededFaultSchedule
     minimized_lifecycle: SeededLifecycleSchedule
     minimized_link_faults: SeededLinkFaultSchedule
+    kept_workload_action_indices: tuple[int, ...]
+    removed_workload_action_indices: tuple[int, ...]
     kept_fault_rule_indices: tuple[int, ...]
     removed_fault_rule_indices: tuple[int, ...]
     kept_lifecycle_action_indices: tuple[int, ...]
@@ -57,11 +61,22 @@ class JointCombinedFaultFailureArtifact:
             node_ids=node_ids,
             leader_id=leader_id,
         )
+        workload_reduction = NonLinearizableClientWorkloadMinimizer().minimize(
+            workload,
+            reduction.faults,
+            lifecycle=reduction.lifecycle,
+            link_faults=reduction.link_faults,
+            node_ids=node_ids,
+            leader_id=leader_id,
+        )
         return cls(
             failure=failure,
+            minimized_workload=workload_reduction.schedule,
             minimized_faults=reduction.faults,
             minimized_lifecycle=reduction.lifecycle,
             minimized_link_faults=reduction.link_faults,
+            kept_workload_action_indices=workload_reduction.kept_original_indices,
+            removed_workload_action_indices=workload_reduction.removed_original_indices,
             kept_fault_rule_indices=reduction.kept_fault_original_indices,
             removed_fault_rule_indices=reduction.removed_fault_original_indices,
             kept_lifecycle_action_indices=reduction.kept_lifecycle_original_indices,
@@ -72,27 +87,39 @@ class JointCombinedFaultFailureArtifact:
 
     def to_json(self) -> str:
         payload = {
-            "version": 2,
+            "version": 3,
             "failure": json.loads(self.failure.to_json()),
+            "minimized_workload": json.loads(self.minimized_workload.to_json()),
             "minimized_faults": json.loads(self.minimized_faults.to_json()),
             "minimized_lifecycle": json.loads(self.minimized_lifecycle.to_json()),
             "minimized_link_faults": json.loads(self.minimized_link_faults.to_json()),
+            "kept_workload_action_indices": list(self.kept_workload_action_indices),
+            "removed_workload_action_indices": list(self.removed_workload_action_indices),
             "kept_fault_rule_indices": list(self.kept_fault_rule_indices),
             "removed_fault_rule_indices": list(self.removed_fault_rule_indices),
             "kept_lifecycle_action_indices": list(self.kept_lifecycle_action_indices),
-            "removed_lifecycle_action_indices": list(self.removed_lifecycle_action_indices),
-            "kept_link_fault_action_indices": list(self.kept_link_fault_action_indices),
-            "removed_link_fault_action_indices": list(self.removed_link_fault_action_indices),
+            "removed_lifecycle_action_indices": list(
+                self.removed_lifecycle_action_indices
+            ),
+            "kept_link_fault_action_indices": list(
+                self.kept_link_fault_action_indices
+            ),
+            "removed_link_fault_action_indices": list(
+                self.removed_link_fault_action_indices
+            ),
         }
         return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
     @classmethod
     def from_json(cls, encoded: str) -> JointCombinedFaultFailureArtifact:
         raw = json.loads(encoded)
-        if not isinstance(raw, dict) or raw.get("version") != 2:
+        if not isinstance(raw, dict) or raw.get("version") != 3:
             raise ValueError("unsupported joint combined fault failure artifact format")
         try:
             failure = CombinedFaultFailureArtifact.from_json(json.dumps(raw["failure"]))
+            workload = SeededClientWorkloadSchedule.from_json(
+                json.dumps(raw["minimized_workload"])
+            )
             faults = SeededFaultSchedule.from_json(json.dumps(raw["minimized_faults"]))
             lifecycle = SeededLifecycleSchedule.from_json(
                 json.dumps(raw["minimized_lifecycle"])
@@ -100,6 +127,8 @@ class JointCombinedFaultFailureArtifact:
             link_faults = SeededLinkFaultSchedule.from_json(
                 json.dumps(raw["minimized_link_faults"])
             )
+            kept_workload = tuple(raw["kept_workload_action_indices"])
+            removed_workload = tuple(raw["removed_workload_action_indices"])
             kept_faults = tuple(raw["kept_fault_rule_indices"])
             removed_faults = tuple(raw["removed_fault_rule_indices"])
             kept_lifecycle = tuple(raw["kept_lifecycle_action_indices"])
@@ -108,12 +137,17 @@ class JointCombinedFaultFailureArtifact:
             removed_links = tuple(raw["removed_link_fault_action_indices"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("invalid joint combined fault failure artifact") from exc
-        if (
-            faults.seed != failure.seed
-            or lifecycle.seed != failure.seed
-            or link_faults.seed != failure.seed
-        ):
+        if len(
+            {workload.seed, faults.seed, lifecycle.seed, link_faults.seed, failure.seed}
+        ) != 1:
             raise ValueError("joint minimized schedules must match artifact seed")
+        cls._validate_projection(
+            kept_workload,
+            removed_workload,
+            failure.workload.actions,
+            workload.actions,
+            "workload",
+        )
         cls._validate_projection(
             kept_faults,
             removed_faults,
@@ -137,9 +171,12 @@ class JointCombinedFaultFailureArtifact:
         )
         return cls(
             failure=failure,
+            minimized_workload=workload,
             minimized_faults=faults,
             minimized_lifecycle=lifecycle,
             minimized_link_faults=link_faults,
+            kept_workload_action_indices=kept_workload,
+            removed_workload_action_indices=removed_workload,
             kept_fault_rule_indices=kept_faults,
             removed_fault_rule_indices=removed_faults,
             kept_lifecycle_action_indices=kept_lifecycle,
@@ -177,10 +214,21 @@ class JointCombinedFaultFailureArtifact:
             node_ids=node_ids,
             leader_id=leader_id,
         )
+        workload_reduction = NonLinearizableClientWorkloadMinimizer().minimize(
+            self.failure.workload,
+            reduction.faults,
+            lifecycle=reduction.lifecycle,
+            link_faults=reduction.link_faults,
+            node_ids=node_ids,
+            leader_id=leader_id,
+        )
         actual = (
+            workload_reduction.schedule,
             reduction.faults,
             reduction.lifecycle,
             reduction.link_faults,
+            workload_reduction.kept_original_indices,
+            workload_reduction.removed_original_indices,
             reduction.kept_fault_original_indices,
             reduction.removed_fault_original_indices,
             reduction.kept_lifecycle_original_indices,
@@ -189,9 +237,12 @@ class JointCombinedFaultFailureArtifact:
             reduction.removed_link_fault_original_indices,
         )
         expected = (
+            self.minimized_workload,
             self.minimized_faults,
             self.minimized_lifecycle,
             self.minimized_link_faults,
+            self.kept_workload_action_indices,
+            self.removed_workload_action_indices,
             self.kept_fault_rule_indices,
             self.removed_fault_rule_indices,
             self.kept_lifecycle_action_indices,
@@ -202,7 +253,7 @@ class JointCombinedFaultFailureArtifact:
         if actual != expected:
             raise FailureArtifactReplayMismatch("joint combined fault reduction changed")
         minimized = ReplicatedKVScenarioRunner(
-            self.failure.workload,
+            self.minimized_workload,
             self.minimized_faults,
             lifecycle=self.minimized_lifecycle,
             link_faults=self.minimized_link_faults,
