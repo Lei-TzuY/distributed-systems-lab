@@ -183,6 +183,17 @@ class LeadershipTransfer:
             if timeout_attempt + 1 >= max_timeout_now_attempts:
                 break
             try:
+                recovered = replicator.recover_peer(
+                    transferee_id,
+                    max_attempts=max_replication_attempts,
+                )
+            except ReplicationError:
+                break
+            if not recovered:
+                break
+            if self.leader.role is not RaftRole.LEADER or self.leader.current_term != previous_term:
+                break
+            try:
                 retry_timeout_now(self.transfer_transport, attempt_id)
             except (RuntimeError, ValueError):
                 break
