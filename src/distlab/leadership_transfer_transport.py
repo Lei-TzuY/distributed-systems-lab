@@ -212,7 +212,11 @@ class LeadershipTransferTransport:
             elif self._attempt_configurations.get(request.attempt_id) is not configuration:
                 reason = "membership-configuration-changed"
 
-        if active_identity == (request.leader_id, request.transferee_id, request.term):
+        retryable = reason == "transferee-not-caught-up"
+        if (
+            active_identity == (request.leader_id, request.transferee_id, request.term)
+            and not retryable
+        ):
             self._active_attempts.pop(request.attempt_id, None)
             self._attempt_configurations.pop(request.attempt_id, None)
 
@@ -225,6 +229,7 @@ class LeadershipTransferTransport:
                 attempt_id=request.attempt_id,
                 target_term=target.current_term,
                 reason=reason,
+                retryable=retryable,
             )
             return
 
