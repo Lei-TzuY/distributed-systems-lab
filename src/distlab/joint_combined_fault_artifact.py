@@ -5,13 +5,12 @@ from dataclasses import dataclass
 
 from .campaign import FailureArtifactReplayMismatch
 from .combined_fault_artifact import CombinedFaultFailureArtifact
-from .combined_fault_minimizer import NonLinearizableCombinedFaultScheduleMinimizer
+from .joint_scenario_minimizer import NonLinearizableJointScenarioMinimizer
 from .lifecycle import SeededLifecycleSchedule
 from .link_fault_schedule import SeededLinkFaultSchedule
 from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import SeededClientWorkloadSchedule
 from .scenario_runner import ReplicatedKVScenarioResult, ReplicatedKVScenarioRunner
-from .workload_minimizer import NonLinearizableClientWorkloadMinimizer
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +52,7 @@ class JointCombinedFaultFailureArtifact:
             node_ids=node_ids,
             leader_id=leader_id,
         )
-        reduction = NonLinearizableCombinedFaultScheduleMinimizer().minimize(
+        reduction = NonLinearizableJointScenarioMinimizer().minimize(
             workload,
             faults,
             lifecycle,
@@ -61,22 +60,14 @@ class JointCombinedFaultFailureArtifact:
             node_ids=node_ids,
             leader_id=leader_id,
         )
-        workload_reduction = NonLinearizableClientWorkloadMinimizer().minimize(
-            workload,
-            reduction.faults,
-            lifecycle=reduction.lifecycle,
-            link_faults=reduction.link_faults,
-            node_ids=node_ids,
-            leader_id=leader_id,
-        )
         return cls(
             failure=failure,
-            minimized_workload=workload_reduction.schedule,
+            minimized_workload=reduction.workload,
             minimized_faults=reduction.faults,
             minimized_lifecycle=reduction.lifecycle,
             minimized_link_faults=reduction.link_faults,
-            kept_workload_action_indices=workload_reduction.kept_original_indices,
-            removed_workload_action_indices=workload_reduction.removed_original_indices,
+            kept_workload_action_indices=reduction.kept_workload_original_indices,
+            removed_workload_action_indices=reduction.removed_workload_original_indices,
             kept_fault_rule_indices=reduction.kept_fault_original_indices,
             removed_fault_rule_indices=reduction.removed_fault_original_indices,
             kept_lifecycle_action_indices=reduction.kept_lifecycle_original_indices,
@@ -206,7 +197,7 @@ class JointCombinedFaultFailureArtifact:
         leader_id: str = "n1",
     ) -> ReplicatedKVScenarioResult:
         result = self.failure.replay(node_ids=node_ids, leader_id=leader_id)
-        reduction = NonLinearizableCombinedFaultScheduleMinimizer().minimize(
+        reduction = NonLinearizableJointScenarioMinimizer().minimize(
             self.failure.workload,
             self.failure.faults,
             self.failure.lifecycle,
@@ -214,21 +205,13 @@ class JointCombinedFaultFailureArtifact:
             node_ids=node_ids,
             leader_id=leader_id,
         )
-        workload_reduction = NonLinearizableClientWorkloadMinimizer().minimize(
-            self.failure.workload,
-            reduction.faults,
-            lifecycle=reduction.lifecycle,
-            link_faults=reduction.link_faults,
-            node_ids=node_ids,
-            leader_id=leader_id,
-        )
         actual = (
-            workload_reduction.schedule,
+            reduction.workload,
             reduction.faults,
             reduction.lifecycle,
             reduction.link_faults,
-            workload_reduction.kept_original_indices,
-            workload_reduction.removed_original_indices,
+            reduction.kept_workload_original_indices,
+            reduction.removed_workload_original_indices,
             reduction.kept_fault_original_indices,
             reduction.removed_fault_original_indices,
             reduction.kept_lifecycle_original_indices,
