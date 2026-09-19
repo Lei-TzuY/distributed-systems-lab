@@ -43,7 +43,9 @@ def test_transfer_reports_source_authority_loss_after_retry_catchup(monkeypatch)
         recoveries += 1
         recovered = original_recover_peer(replicator, peer, max_attempts=max_attempts)
         if recoveries == 2:
-            source.role = RaftRole.FOLLOWER
+            cluster.node("n3").start_election()
+            sim.run()
+            assert source.role is RaftRole.FOLLOWER
         return recovered
 
     monkeypatch.setattr(LeaderReplicator, "recover_peer", lose_authority_after_retry_recovery)
@@ -55,6 +57,8 @@ def test_transfer_reports_source_authority_loss_after_retry_catchup(monkeypatch)
         LeadershipTransfer(source).transfer("n2", max_timeout_now_attempts=2)
 
     assert recoveries == 2
+    assert source.role is RaftRole.FOLLOWER
+    assert cluster.node("n3").role is RaftRole.LEADER
     timeout_sends = [
         record
         for record in sim.trace
