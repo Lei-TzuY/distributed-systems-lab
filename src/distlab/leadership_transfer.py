@@ -186,8 +186,17 @@ class LeadershipTransfer:
                 recovered = replicator.recover_peer(
                     transferee_id, max_attempts=max_replication_attempts
                 )
-            except ReplicationError:
-                break
+            except ReplicationError as exc:
+                self.transfer_transport.cancel_timeout_now(attempt_id)
+                self._record_failure(
+                    transferee_id,
+                    previous_term,
+                    stage="retry",
+                    reason=str(exc),
+                )
+                raise LeadershipTransferIncomplete(
+                    f"failed to re-catch up leadership transferee {transferee_id!r}"
+                ) from exc
             if not recovered:
                 break
             if not self.sim.is_alive(transferee_id):
