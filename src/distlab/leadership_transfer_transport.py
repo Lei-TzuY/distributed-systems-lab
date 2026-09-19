@@ -69,6 +69,8 @@ class LeadershipTransferTransport:
             raise RuntimeError("leadership transfer trigger requires a live source leader")
         if leader.role is not RaftRole.LEADER or leader.current_term != term:
             raise RuntimeError("leadership transfer trigger requires current leader authority")
+        if not self.sim.is_alive(transferee_id):
+            raise RuntimeError("leadership transfer trigger requires a live transferee")
         active_attempt = self._active_attempt_for(leader_id, term)
         if active_attempt is not None:
             active_attempt_id, active_transferee = active_attempt
