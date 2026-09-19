@@ -211,7 +211,16 @@ class LeadershipTransfer:
                     f"leadership transferee {transferee_id!r} crashed during retry catch-up"
                 )
             if self.leader.role is not RaftRole.LEADER or self.leader.current_term != previous_term:
-                break
+                self.transfer_transport.cancel_timeout_now(attempt_id)
+                self._record_failure(
+                    transferee_id,
+                    previous_term,
+                    stage="retry",
+                    reason="source leader lost leadership during retry catch-up",
+                )
+                raise LeadershipTransferIncomplete(
+                    "source leader lost leadership during leadership-transfer retry catch-up"
+                )
             try:
                 retry_timeout_now(self.transfer_transport, attempt_id)
             except (RuntimeError, ValueError):
