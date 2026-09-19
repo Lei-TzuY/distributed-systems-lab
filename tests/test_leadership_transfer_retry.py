@@ -63,3 +63,39 @@ def test_retry_rejects_cancelled_attempt() -> None:
 
     with pytest.raises(ValueError, match="unknown active leadership transfer attempt"):
         retry_timeout_now(transport, attempt_id)
+
+
+def test_retry_waits_for_crashed_transferee_without_consuming_attempt() -> None:
+    sim, cluster = _leader_cluster()
+    transport = LeadershipTransferTransport.for_cluster(cluster)
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+
+    attempt_id = transport.send_timeout_now("n1", "n2", term=1)
+    sim.run()
+    assert cluster.node("n1").role is RaftRole.LEADER
+
+    sim.crash("n2")
+    retry_count = sum(record.kind == "raft-timeout-now-retry" for record in sim.trace)
+    send_count = sum(
+        record.kind == "send" and isinstance(record.details["payload"], TimeoutNow)
+        for record in sim.trace
+    )
+
+    with pytest.raises(RuntimeError, match="live transferee"):
+        retry_timeout_now(transport, attempt_id)
+
+    assert sum(record.kind == "raft-timeout-now-retry" for record in sim.trace) == retry_count
+    assert sum(
+        record.kind == "send" and isinstance(record.details["payload"], TimeoutNow)
+        for record in sim.trace
+    ) == send_count
+
+    sim.restart("n2")
+    retry_timeout_now(transport, attempt_id)
+    sim.run()
+
+    assert cluster.node("n2").role is RaftRole.LEADER
+    retries = [record for record in sim.trace if record.kind == "raft-timeout-now-retry"]
+    assert retries[-1].details["attempt_id"] == attempt_id
+    harness.checkpoint()
