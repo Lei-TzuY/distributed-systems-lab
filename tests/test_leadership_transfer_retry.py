@@ -2,7 +2,7 @@ import pytest
 
 from distlab.leadership_transfer_retry import retry_timeout_now
 from distlab.leadership_transfer_transport import LeadershipTransferTransport, TimeoutNow
-from distlab.raft import RaftCluster, RaftRole
+from distlab.raft import LogEntry, RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import FaultAction, FaultPlan, FaultRule, Simulator
 
@@ -98,4 +98,40 @@ def test_retry_waits_for_crashed_transferee_without_consuming_attempt() -> None:
     assert cluster.node("n2").role is RaftRole.LEADER
     retries = [record for record in sim.trace if record.kind == "raft-timeout-now-retry"]
     assert retries[-1].details["attempt_id"] == attempt_id
+    harness.checkpoint()
+
+
+def test_retry_rejects_transferee_that_fell_behind_without_consuming_attempt() -> None:
+    sim, cluster = _leader_cluster()
+    transport = LeadershipTransferTransport.for_cluster(cluster)
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+
+    leader = cluster.node("n1")
+    target = cluster.node("n2")
+    attempt_id = transport.send_timeout_now("n1", "n2", term=leader.current_term)
+    sim.run()
+    assert leader.role is RaftRole.LEADER
+
+    sim.persistent_state[leader.node_id]["log"] = (
+        *leader.log,
+        LogEntry(term=leader.current_term, command="set after-drop=1"),
+    )
+    assert target.last_log_index < leader.last_log_index
+    retry_count = sum(record.kind == "raft-timeout-now-retry" for record in sim.trace)
+    send_count = sum(
+        record.kind == "send" and isinstance(record.details["payload"], TimeoutNow)
+        for record in sim.trace
+    )
+
+    with pytest.raises(RuntimeError, match="caught-up transferee"):
+        retry_timeout_now(transport, attempt_id)
+
+    assert sum(record.kind == "raft-timeout-now-retry" for record in sim.trace) == retry_count
+    assert sum(
+        record.kind == "send" and isinstance(record.details["payload"], TimeoutNow)
+        for record in sim.trace
+    ) == send_count
+    assert attempt_id in transport._active_attempts
+    assert target.role is RaftRole.FOLLOWER
     harness.checkpoint()

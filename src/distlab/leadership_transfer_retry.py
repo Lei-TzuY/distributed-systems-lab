@@ -13,12 +13,10 @@ def retry_timeout_now(transport: LeadershipTransferTransport, attempt_id: int) -
     same logical Raft link, so deterministic drop/delay/partition semantics
     continue to apply.
 
-    A crashed transferee is rejected before enqueueing the retry. The simulator
-    discards messages to crashed logical destinations before delivery handlers
-    run, so enqueueing here would consume retry budget without producing a
-    protocol observation. The original attempt remains active and can still be
-    retried after the transferee is restarted, provided leader authority and
-    membership identity remain unchanged.
+    A crashed or no-longer-caught-up transferee is rejected before enqueueing
+    the retry. The original attempt remains active and can still be retried
+    after the transferee is restarted or caught up, provided leader authority
+    and membership identity remain unchanged.
     """
 
     identity = transport._active_attempts.get(attempt_id)
@@ -34,6 +32,14 @@ def retry_timeout_now(transport: LeadershipTransferTransport, attempt_id: int) -
         raise RuntimeError("leadership transfer retry requires unchanged voting configuration")
     if not transport.sim.is_alive(transferee_id):
         raise RuntimeError("leadership transfer retry requires a live transferee")
+
+    transferee = transport.cluster.node(transferee_id)
+    if (
+        transferee.last_log_index != leader.last_log_index
+        or transferee.last_log_term != leader.last_log_term
+        or transferee.commit_index < leader.commit_index
+    ):
+        raise RuntimeError("leadership transfer retry requires a caught-up transferee")
 
     transport.sim._record(
         "raft-timeout-now-retry",
