@@ -102,18 +102,13 @@ class LeadershipTransfer:
 
         if isinstance(cluster, ReconfigurableRaftCluster):
             replicator = MembershipAwareLeaderReplicator(
-                self.leader,
-                snapshot_transport=self.snapshot_transport,
+                self.leader, snapshot_transport=self.snapshot_transport
             )
         else:
-            replicator = LeaderReplicator(
-                self.leader,
-                snapshot_transport=self.snapshot_transport,
-            )
+            replicator = LeaderReplicator(self.leader, snapshot_transport=self.snapshot_transport)
         try:
             recovered = replicator.recover_peer(
-                transferee_id,
-                max_attempts=max_replication_attempts,
+                transferee_id, max_attempts=max_replication_attempts
             )
         except ReplicationError as exc:
             self._record_failure(transferee_id, previous_term, stage="catch-up", reason=str(exc))
@@ -130,7 +125,6 @@ class LeadershipTransfer:
             raise LeadershipTransferIncomplete(
                 f"leadership transferee {transferee_id!r} did not catch up"
             )
-
         if not self.sim.is_alive(transferee_id):
             self._record_failure(
                 transferee_id,
@@ -141,7 +135,6 @@ class LeadershipTransfer:
             raise LeadershipTransferTargetUnavailable(
                 f"leadership transferee {transferee_id!r} crashed during catch-up"
             )
-
         if self.leader.role is not RaftRole.LEADER or self.leader.current_term != previous_term:
             self._record_failure(
                 transferee_id,
@@ -152,7 +145,6 @@ class LeadershipTransfer:
             raise LeadershipTransferIncomplete(
                 "source leader lost leadership during transferee catch-up"
             )
-
         if (
             target.last_log_index != self.leader.last_log_index
             or target.last_log_term != self.leader.last_log_term
@@ -176,11 +168,8 @@ class LeadershipTransfer:
             last_log_index=target.last_log_index,
             commit_index=target.commit_index,
         )
-
         attempt_id = self.transfer_transport.send_timeout_now(
-            self.leader.node_id,
-            transferee_id,
-            term=previous_term,
+            self.leader.node_id, transferee_id, term=previous_term
         )
         event_budget = max(4, len(cluster.node_ids) * 4)
         for timeout_attempt in range(max_timeout_now_attempts):
@@ -195,13 +184,23 @@ class LeadershipTransfer:
                 break
             try:
                 recovered = replicator.recover_peer(
-                    transferee_id,
-                    max_attempts=max_replication_attempts,
+                    transferee_id, max_attempts=max_replication_attempts
                 )
             except ReplicationError:
                 break
             if not recovered:
                 break
+            if not self.sim.is_alive(transferee_id):
+                self.transfer_transport.cancel_timeout_now(attempt_id)
+                self._record_failure(
+                    transferee_id,
+                    previous_term,
+                    stage="retry",
+                    reason="transferee crashed during retry catch-up",
+                )
+                raise LeadershipTransferTargetUnavailable(
+                    f"leadership transferee {transferee_id!r} crashed during retry catch-up"
+                )
             if self.leader.role is not RaftRole.LEADER or self.leader.current_term != previous_term:
                 break
             try:
