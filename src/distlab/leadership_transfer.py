@@ -131,6 +131,17 @@ class LeadershipTransfer:
                 f"leadership transferee {transferee_id!r} did not catch up"
             )
 
+        if not self.sim.is_alive(transferee_id):
+            self._record_failure(
+                transferee_id,
+                previous_term,
+                stage="catch-up",
+                reason="transferee crashed during catch-up",
+            )
+            raise LeadershipTransferTargetUnavailable(
+                f"leadership transferee {transferee_id!r} crashed during catch-up"
+            )
+
         if self.leader.role is not RaftRole.LEADER or self.leader.current_term != previous_term:
             self._record_failure(
                 transferee_id,
