@@ -7,7 +7,9 @@ from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
 
 
-def test_transfer_reports_source_authority_loss_while_waiting_for_election(monkeypatch) -> None:
+def test_transfer_reports_source_authority_loss_while_waiting_for_election(
+    monkeypatch,
+) -> None:
     sim = Simulator()
     cluster = RaftCluster(sim, ("n1", "n2", "n3"))
     source = cluster.node("n1")
@@ -41,5 +43,8 @@ def test_transfer_reports_source_authority_loss_while_waiting_for_election(monke
     assert not any(record.kind == "raft-leadership-transfer-complete" for record in sim.trace)
     failures = [record for record in sim.trace if record.kind == "raft-leadership-transfer-failed"]
     assert failures[-1].details["stage"] == "election"
-    assert failures[-1].details["reason"] == "source leader lost leadership during transferee election"
+    assert (
+        failures[-1].details["reason"]
+        == "source leader lost leadership during transferee election"
+    )
     harness.checkpoint()
