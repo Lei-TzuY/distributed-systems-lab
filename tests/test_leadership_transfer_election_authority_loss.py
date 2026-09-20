@@ -24,6 +24,7 @@ def test_transfer_reports_source_authority_loss_while_waiting_for_election(
 
     def send_then_retire_source(source_id: str, transferee_id: str, *, term: int) -> int:
         attempt_id = original_send_timeout_now(source_id, transferee_id, term=term)
+        transport.cancel_timeout_now(attempt_id)
         cluster.node("n3").start_election()
         sim.run()
         assert source.role is RaftRole.FOLLOWER
