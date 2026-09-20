@@ -246,6 +246,16 @@ class LeadershipTransfer:
 
         if not self._transfer_elected(target, previous_term):
             self.transfer_transport.cancel_timeout_now(attempt_id)
+            if self.leader.role is not RaftRole.LEADER or self.leader.current_term != previous_term:
+                self._record_failure(
+                    transferee_id,
+                    previous_term,
+                    stage="election",
+                    reason="source leader lost leadership during transferee election",
+                )
+                raise LeadershipTransferIncomplete(
+                    "source leader lost leadership while waiting for transferee election"
+                )
             self._record_failure(
                 transferee_id,
                 previous_term,
