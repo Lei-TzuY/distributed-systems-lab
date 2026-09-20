@@ -198,7 +198,16 @@ class LeadershipTransfer:
                     f"failed to re-catch up leadership transferee {transferee_id!r}"
                 ) from exc
             if not recovered:
-                break
+                self.transfer_transport.cancel_timeout_now(attempt_id)
+                self._record_failure(
+                    transferee_id,
+                    previous_term,
+                    stage="retry",
+                    reason="replication attempt budget exhausted",
+                )
+                raise LeadershipTransferIncomplete(
+                    f"leadership transferee {transferee_id!r} did not re-catch up"
+                )
             if not self.sim.is_alive(transferee_id):
                 self.transfer_transport.cancel_timeout_now(attempt_id)
                 self._record_failure(
