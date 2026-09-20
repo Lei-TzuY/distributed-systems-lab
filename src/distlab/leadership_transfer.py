@@ -232,8 +232,17 @@ class LeadershipTransfer:
                 )
             try:
                 retry_timeout_now(self.transfer_transport, attempt_id)
-            except (RuntimeError, ValueError):
-                break
+            except (RuntimeError, ValueError) as exc:
+                self.transfer_transport.cancel_timeout_now(attempt_id)
+                self._record_failure(
+                    transferee_id,
+                    previous_term,
+                    stage="retry",
+                    reason=f"TimeoutNow retry rejected: {exc}",
+                )
+                raise LeadershipTransferIncomplete(
+                    f"failed to retry TimeoutNow for leadership transferee {transferee_id!r}"
+                ) from exc
 
         if not self._transfer_elected(target, previous_term):
             self.transfer_transport.cancel_timeout_now(attempt_id)
