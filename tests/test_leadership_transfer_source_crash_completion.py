@@ -76,7 +76,7 @@ def test_transfer_completes_when_source_restarts_before_target_wins(monkeypatch)
     assert target.role is RaftRole.LEADER
     assert result.new_term == result.previous_term + 1
     assert any(
-        record.kind == "fault-drop"
+        record.kind == "drop"
         and record.details["src"] == "n2"
         and record.details["dst"] == "n1"
         and record.details["ordinal"] == 2
