@@ -39,7 +39,15 @@ def test_transfer_completes_when_source_crashes_after_timeout_now_delivery(monke
 def test_transfer_completes_when_source_restarts_before_target_wins(monkeypatch) -> None:
     sim = Simulator(
         fault_plan=FaultPlan(
-            (FaultRule(FaultAction.DROP, src="n2", dst="n1", ordinal=1),)
+            (
+                FaultRule(
+                    FaultAction.DROP,
+                    src="n2",
+                    dst="n1",
+                    ordinal=1,
+                    payload_type="RequestVote",
+                ),
+            )
         )
     )
     cluster = RaftCluster(sim, ("n1", "n2", "n3"))
@@ -71,6 +79,7 @@ def test_transfer_completes_when_source_restarts_before_target_wins(monkeypatch)
         record.kind == "fault-drop"
         and record.details["src"] == "n2"
         and record.details["dst"] == "n1"
+        and record.details["payload_type"] == "RequestVote"
         for record in sim.trace
     )
     assert any(record.kind == "raft-leadership-transfer-complete" for record in sim.trace)
