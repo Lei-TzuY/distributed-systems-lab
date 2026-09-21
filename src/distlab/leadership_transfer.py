@@ -289,11 +289,14 @@ class LeadershipTransfer:
         return result
 
     def _transfer_elected(self, target: RaftNode, previous_term: int) -> bool:
+        source_retired = not self.sim.is_alive(self.leader.node_id) or (
+            self.leader.role is not RaftRole.LEADER
+            and self.leader.current_term >= target.current_term
+        )
         return (
             target.role is RaftRole.LEADER
             and target.current_term > previous_term
-            and self.leader.role is not RaftRole.LEADER
-            and self.leader.current_term >= target.current_term
+            and source_retired
         )
 
     def _require_current_leader(self) -> None:
