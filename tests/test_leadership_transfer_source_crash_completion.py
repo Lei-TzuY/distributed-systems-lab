@@ -44,7 +44,7 @@ def test_transfer_completes_when_source_restarts_before_target_wins(monkeypatch)
                     FaultAction.DROP,
                     src="n2",
                     dst="n1",
-                    ordinal=1,
+                    ordinal=2,
                     payload_type="RequestVote",
                 ),
             )
@@ -79,6 +79,7 @@ def test_transfer_completes_when_source_restarts_before_target_wins(monkeypatch)
         record.kind == "fault-drop"
         and record.details["src"] == "n2"
         and record.details["dst"] == "n1"
+        and record.details["ordinal"] == 2
         and record.details["payload_type"] == "RequestVote"
         for record in sim.trace
     )
