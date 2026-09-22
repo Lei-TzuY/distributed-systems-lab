@@ -275,7 +275,7 @@ class ReplicatedKV:
             if isinstance(command, ClientRequest):
                 if not isinstance(command.operation, (Put, Delete)):
                     raise InvalidKVCommand(f"unsupported KV command {command.operation!r}")
-            elif self._is_membership_control_command(command):
+            elif ReplicatedKV._is_membership_control_command(command):
                 continue
             elif not isinstance(command, (Put, Delete, CommitRecoveryBarrier)):
                 raise InvalidKVCommand(f"unsupported KV command {command!r}")
