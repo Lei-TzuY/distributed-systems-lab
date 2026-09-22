@@ -27,6 +27,13 @@ from .leader_liveness import (
     LeaderQuorumMonitor,
     LeaderQuorumUnavailable,
 )
+from .leader_runtime import (
+    LeaderRuntimeError,
+    LeaderRuntimeIdentity,
+    LeaderRuntimeSupervisor,
+    LeaderRuntimeUnavailable,
+    StaleLeaderRuntimeGeneration,
+)
 from .lifecycle import (
     NodeLifecycleAction,
     NodeLifecycleKind,
@@ -57,6 +64,8 @@ from .raft import (
     AppendEntries,
     AppendEntriesResponse,
     ElectionSafetyViolation,
+    LeadershipLifecycleEvent,
+    LeadershipLifecycleKind,
     LogEntry,
     LogMatchingViolation,
     PreVote,
@@ -145,10 +154,16 @@ __all__ = [
     "LeaderHeartbeatController",
     "LeaderLivenessError",
     "LeaderLogObservation",
+    "LeaderRuntimeError",
+    "LeaderRuntimeIdentity",
+    "LeaderRuntimeSupervisor",
+    "LeaderRuntimeUnavailable",
     "LeaderQuorumEvidence",
     "LeaderQuorumMembershipChanged",
     "LeaderQuorumMonitor",
     "LeaderQuorumUnavailable",
+    "LeadershipLifecycleEvent",
+    "LeadershipLifecycleKind",
     "LifecycleScheduleMinimizationResult",
     "LinearizabilityResult",
     "LinearizableKVReader",
@@ -190,6 +205,7 @@ __all__ = [
     "SingleKeyKVLinearizabilityChecker",
     "SnapshotClientRequest",
     "StateMachineApplier",
+    "StaleLeaderRuntimeGeneration",
     "StateMachineSafetyViolation",
     "TraceRecord",
 ]
