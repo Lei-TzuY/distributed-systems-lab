@@ -18,6 +18,14 @@ from .kv import (
     Put,
     ReplicatedKV,
 )
+from .leader_liveness import (
+    LeaderAuthorityLost,
+    LeaderLivenessError,
+    LeaderQuorumEvidence,
+    LeaderQuorumMembershipChanged,
+    LeaderQuorumMonitor,
+    LeaderQuorumUnavailable,
+)
 from .lifecycle import (
     NodeLifecycleAction,
     NodeLifecycleKind,
@@ -27,14 +35,6 @@ from .lifecycle import (
 from .lifecycle_minimizer import (
     LifecycleScheduleMinimizationResult,
     NonLinearizableLifecycleScheduleMinimizer,
-)
-from .leader_liveness import (
-    LeaderAuthorityLost,
-    LeaderLivenessError,
-    LeaderQuorumEvidence,
-    LeaderQuorumMembershipChanged,
-    LeaderQuorumMonitor,
-    LeaderQuorumUnavailable,
 )
 from .linearizability import (
     CompletedOperation,
