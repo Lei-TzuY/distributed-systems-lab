@@ -37,7 +37,7 @@ class LeaderWriteResult:
     term: int
     generation: int
     request: ClientRequest
-    log_index: int
+    log_index: int | None
     commit_index: int
 
 
@@ -462,8 +462,6 @@ class LeaderKVService:
         request: ClientRequest,
         log_index: int | None,
     ) -> LeaderWriteResult:
-        if log_index is None:
-            log_index = self.cluster.node(identity.leader_id).commit_index
         return LeaderWriteResult(
             leader_id=identity.leader_id,
             term=identity.term,
