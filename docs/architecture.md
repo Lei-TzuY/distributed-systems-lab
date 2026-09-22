@@ -86,8 +86,11 @@ The original deterministic correctness chain remains the replay/artifact compati
 4. node-local leader runtime generations across election, crash/restart, and authority loss
 5. generation-fenced client KV reads/writes
 6. generation validation in deterministic scenario writes without changing their network-event schedule
+7. commit-synchronous membership authority and generation-fenced transition recovery across leader handoff
 
 `LeaderGenerationGuard` is the shared authority primitive for client-facing service and scenario execution. It reads Raft's node-local active generation state and never schedules heartbeat/runtime work itself, keeping data-plane fencing separate from control-plane tick ownership.
+
+Membership transitions now treat objective Raft commit as the live quorum boundary: durable membership watermark and `VotingConfiguration` advance together. Uncommitted membership commands can be reconstructed by the next leader from the durable log, while the old transition controller is fenced by its retired leader generation. Older-term recovered proposals use an explicit current-term recovery barrier before commit.
 
 The next architectural frontier should therefore build on these integrated capabilities rather than reopening completed Phase 2 foundations. Autonomous runtime scheduling, higher-level operation orchestration, broader consensus protocols, and real-network deployment remain explicit future projects.
 
