@@ -44,3 +44,27 @@ introducing an unbounded background task.
 
 No future heartbeat is enqueued beyond the requested round budget, so test and
 scenario callers retain explicit control over termination.
+
+## Leader runtime lifecycle ownership
+
+`LeaderRuntimeSupervisor` binds heartbeat and CheckQuorum state to explicit
+node-local leader generations.
+
+- every successful election acquires a new runtime generation for that node;
+- same-term CheckQuorum step-down, higher-term authority loss, crash, and restart
+  retire only that node's matching generation;
+- leadership transfer retires the source generation and starts a new target
+  generation when the transferee wins;
+- partitions may temporarily leave different-term leaders with independent
+  runtimes, matching distributed Raft semantics instead of choosing one
+  simulator-global leader;
+- reconfigurable clusters automatically use membership-aware replication and
+  joint-consensus quorum rules;
+- callers may fence work with an expected generation so stale leader-runtime
+  authority fails explicitly.
+
+Crash lifecycle callbacks run before volatile state is cleared, preserving enough
+local authority state to retire the correct generation deterministically. A
+retired leader that observes a higher-term but stale RequestVote also re-arms its
+election timeout after rejecting the vote, so runtime retirement cannot strand the
+node as a timerless follower.
