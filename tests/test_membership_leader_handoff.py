@@ -1,7 +1,7 @@
 import pytest
 
-from distlab.membership import MembershipChangeError, ReconfigurableRaftCluster
 from distlab.leadership_transfer import LeadershipTransfer
+from distlab.membership import MembershipChangeError, ReconfigurableRaftCluster
 from distlab.membership_log import ReplicatedMembershipTransition
 from distlab.membership_replication import MembershipAwareLeaderReplicator
 from distlab.raft import RaftRole
