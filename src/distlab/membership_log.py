@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .commit_recovery import append_current_term_barrier
 from .membership import (
     MembershipChangeError,
     ReconfigurableRaftCluster,
@@ -229,6 +230,71 @@ def _persist_membership_commit_watermark(
         previous = int(state.get(_MEMBERSHIP_COMMIT_INDEX, 0))
         if index > previous:
             state[_MEMBERSHIP_COMMIT_INDEX] = index
+
+
+def _durable_membership_commit_index(cluster: ReconfigurableRaftCluster) -> int:
+    return max(
+        (
+            int(cluster.sim.persistent_state[node_id].get(_MEMBERSHIP_COMMIT_INDEX, 0))
+            for node_id in cluster.node_ids
+        ),
+        default=0,
+    )
+
+
+def _install_committed_membership(
+    cluster: ReconfigurableRaftCluster,
+    *,
+    leader_id: str,
+    index: int,
+    command: MembershipCommand,
+) -> bool:
+    """Make one objectively committed membership entry immediately authoritative."""
+
+    configuration = cluster.voting_configuration
+    if isinstance(command, JointConsensusCommand):
+        proposed = frozenset(command.new_voters)
+        if configuration.new_voters is not None:
+            if configuration.new_voters != proposed:
+                raise MembershipChangeError(
+                    "live joint configuration conflicts with committed membership proposal"
+                )
+            return False
+        cluster.begin_joint_consensus(leader_id, command.new_voters)
+        cluster.sim._record(
+            "raft-membership-committed",
+            leader=leader_id,
+            term=cluster.node(leader_id).current_term,
+            index=index,
+            new_voters=command.new_voters,
+        )
+        return True
+
+    voters = frozenset(command.voters)
+    if configuration.new_voters is None:
+        if configuration.old_voters != voters:
+            raise MembershipChangeError(
+                "live stable configuration conflicts with committed finalization"
+            )
+        return False
+    if configuration.new_voters != voters:
+        raise MembershipChangeError(
+            "active joint configuration changed before committed finalization"
+        )
+    if leader_id not in voters:
+        raise MembershipChangeError(
+            "current leader must belong to the new voter configuration"
+        )
+
+    cluster.finalize_membership(leader_id)
+    cluster.sim._record(
+        "raft-membership-finalized",
+        leader=leader_id,
+        term=cluster.node(leader_id).current_term,
+        index=index,
+        voters=command.voters,
+    )
+    return True
 
 
 class ReplicatedMembershipTransition:
