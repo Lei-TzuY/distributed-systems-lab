@@ -10,6 +10,7 @@ from .fault_schedule_minimizer import (
     NonLinearizableFaultScheduleMinimizer,
 )
 from .history_minimizer import HistoryMinimizationResult, NonLinearizableHistoryMinimizer
+from .heartbeat import HeartbeatRound, LeaderHeartbeatController
 from .kv import (
     ClientRequest,
     ClientRequestConflict,
@@ -129,6 +130,7 @@ __all__ = [
     "FaultScheduleMinimizationResult",
     "Get",
     "HistoryMinimizationResult",
+    "HeartbeatRound",
     "InvalidHistory",
     "InvalidKVCommand",
     "Invocation",
@@ -140,6 +142,7 @@ __all__ = [
     "LeaderAuthorityLost",
     "LeaderCompletenessChecker",
     "LeaderCompletenessViolation",
+    "LeaderHeartbeatController",
     "LeaderLivenessError",
     "LeaderLogObservation",
     "LeaderQuorumEvidence",
