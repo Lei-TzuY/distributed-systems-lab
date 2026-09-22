@@ -14,7 +14,7 @@ This milestone adds the leader-side `nextIndex` / `matchIndex` retry state neede
 - every probe, backtrack, and successful advance is written to the simulator trace;
 - bounded retry calls preserve their progress so a later call resumes from the same deterministic state.
 
-This is deliberately **not** commit advancement. The component does not calculate a majority commit index, apply commands to a state machine, schedule periodic heartbeats, optimize conflict hints, or hide dropped-message retry behind wall-clock behavior. Those remain separate milestones so each correctness step can be tested independently.
+`LeaderReplicator` still does not own a wall-clock loop. Commit advancement and state-machine application remain separate concerns, while heartbeat scheduling is now composed above it by `LeaderHeartbeatController`. The controller uses explicit logical-time cadence and bounded response windows, so finite simulator scenarios remain replayable and terminating.
 
 ## Why a separate controller first?
 
@@ -27,3 +27,20 @@ The current Raft core already has a deterministic simulator and correct follower
 - `raft-replication-advance`: records a successful response and the monotonic advance of `matchIndex` / `nextIndex`.
 
 A deterministic trace therefore explains exactly which prefix mismatch caused each retry and can be replayed alongside the simulator's existing AppendEntries events.
+## Bounded heartbeat control loop
+
+`LeaderHeartbeatController` composes leader replication and CheckQuorum without
+introducing an unbounded background task.
+
+- `Simulator.run_until_time()` advances only through events due inside an explicit
+  logical-time window and leaves later events queued.
+- heartbeat rounds are finite and scheduled at deterministic logical deadlines;
+- each round sends correlated empty AppendEntries probes to active voters concurrently;
+- same-term rejection responses still prove voter activity;
+- the round evaluates stable or joint-consensus quorum after a bounded response window;
+- quorum loss retires leader authority in the same term and re-arms election timeout state;
+- observing a higher term uses the normal Raft term-advance path, which also re-arms
+  the former leader's election timeout.
+
+No future heartbeat is enqueued beyond the requested round budget, so test and
+scenario callers retain explicit control over termination.
