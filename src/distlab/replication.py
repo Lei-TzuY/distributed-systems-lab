@@ -61,6 +61,66 @@ class LeaderReplicator:
         self._require_peer(peer)
         return self._progress[peer]
 
+    def probe_activity(self, peer: str) -> bool:
+        """Confirm a same-term peer response without changing replication progress.
+
+        CheckQuorum cares about voter activity, not whether the follower already
+        matches the leader's log tail. An AppendEntries rejection therefore still
+        proves same-term liveness and counts as an acknowledgement.
+        """
+        self._require_peer(peer)
+        self._require_current_leader()
+
+        log = self.leader.log_view
+        prev_log_index = log.last_index
+        response_ordinal_floor = self._append_response_ordinal_floor(peer)
+        trace_start = len(self.sim.trace)
+        self.sim._record(
+            "raft-quorum-probe",
+            leader=self.leader.node_id,
+            follower=peer,
+            term=self._term,
+            prev_log_index=prev_log_index,
+            leader_commit=self._commit_index,
+            response_ordinal_floor=response_ordinal_floor,
+        )
+        self.leader.send_append_entries(
+            peer,
+            prev_log_index=prev_log_index,
+            entries=(),
+            leader_commit=self._commit_index,
+        )
+        self.sim.run()
+        self._require_current_leader()
+
+        response = self._matching_response(
+            peer,
+            trace_start,
+            kind="raft-append-response",
+            expected_match_index=prev_log_index,
+            expected_prev_log_index=prev_log_index,
+            expected_entry_count=0,
+            response_ordinal_floor=response_ordinal_floor,
+        )
+        if response is None:
+            self.sim._record(
+                "raft-quorum-probe-missing",
+                leader=self.leader.node_id,
+                follower=peer,
+                term=self._term,
+            )
+            return False
+
+        self.sim._record(
+            "raft-quorum-probe-ack",
+            leader=self.leader.node_id,
+            follower=peer,
+            term=self._term,
+            append_success=bool(response.details["success"]),
+            match_index=int(response.details["match_index"]),
+        )
+        return True
+
     def replicate(self, peer: str, *, max_attempts: int | None = None) -> bool:
         self._require_peer(peer)
         if max_attempts is not None and max_attempts <= 0:

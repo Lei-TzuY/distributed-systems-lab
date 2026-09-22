@@ -18,6 +18,14 @@ from .kv import (
     Put,
     ReplicatedKV,
 )
+from .leader_liveness import (
+    LeaderAuthorityLost,
+    LeaderLivenessError,
+    LeaderQuorumEvidence,
+    LeaderQuorumMembershipChanged,
+    LeaderQuorumMonitor,
+    LeaderQuorumUnavailable,
+)
 from .lifecycle import (
     NodeLifecycleAction,
     NodeLifecycleKind,
@@ -129,9 +137,15 @@ __all__ = [
     "KVSnapshotStore",
     "LeaderAppendOnlyChecker",
     "LeaderAppendOnlyViolation",
+    "LeaderAuthorityLost",
     "LeaderCompletenessChecker",
     "LeaderCompletenessViolation",
+    "LeaderLivenessError",
     "LeaderLogObservation",
+    "LeaderQuorumEvidence",
+    "LeaderQuorumMembershipChanged",
+    "LeaderQuorumMonitor",
+    "LeaderQuorumUnavailable",
     "LifecycleScheduleMinimizationResult",
     "LinearizabilityResult",
     "LinearizableKVReader",
