@@ -6,7 +6,9 @@ from distlab.leadership_transfer import (
     LeadershipTransferIncomplete,
     LeadershipTransferTargetUnavailable,
 )
-from distlab.leadership_transfer_retry import retry_timeout_now as real_retry_timeout_now
+from distlab.leadership_transfer_retry import (
+    retry_timeout_now as real_retry_timeout_now,
+)
 from distlab.leadership_transfer_transport import TimeoutNow
 from distlab.raft import RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
@@ -58,13 +60,22 @@ def test_transfer_reports_timeout_now_retry_rejection(monkeypatch) -> None:
     ]
     assert len(timeout_sends) == 1
     assert not any(record.kind == "raft-timeout-now-retry" for record in sim.trace)
-    failures = [record for record in sim.trace if record.kind == "raft-leadership-transfer-failed"]
+    failures = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-leadership-transfer-failed"
+    ]
     assert failures[-1].details["stage"] == "retry"
-    assert failures[-1].details["reason"] == "TimeoutNow retry rejected: retry authority rejected"
+    assert (
+        failures[-1].details["reason"]
+        == "TimeoutNow retry rejected: retry authority rejected"
+    )
     harness.checkpoint()
 
 
-def test_transfer_classifies_target_crash_at_timeout_now_retry_dispatch(monkeypatch) -> None:
+def test_transfer_classifies_target_crash_at_timeout_now_retry_dispatch(
+    monkeypatch,
+) -> None:
     sim = _retry_simulator()
     cluster = RaftCluster(sim, ("n1", "n2", "n3"))
     source = cluster.node("n1")
@@ -88,12 +99,21 @@ def test_transfer_classifies_target_crash_at_timeout_now_retry_dispatch(monkeypa
         LeadershipTransfer(source).transfer("n2", max_timeout_now_attempts=2)
 
     retry_rejections = [
-        record for record in sim.trace if record.kind == "raft-timeout-now-retry-rejected"
+        record
+        for record in sim.trace
+        if record.kind == "raft-timeout-now-retry-rejected"
     ]
     assert retry_rejections[-1].details["reason"] == "transferee-crashed"
-    failures = [record for record in sim.trace if record.kind == "raft-leadership-transfer-failed"]
+    failures = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-leadership-transfer-failed"
+    ]
     assert failures[-1].details["stage"] == "retry"
-    assert failures[-1].details["reason"] == "transferee crashed before TimeoutNow retry dispatch"
+    assert (
+        failures[-1].details["reason"]
+        == "transferee crashed before TimeoutNow retry dispatch"
+    )
     assert not any(record.kind == "raft-timeout-now-retry" for record in sim.trace)
 
     sim.restart("n2")
