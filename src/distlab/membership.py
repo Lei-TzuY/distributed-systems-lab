@@ -381,6 +381,7 @@ class ReconfigurableRaftNode(RaftNode):
             if voted_for is None or voted_for == request.candidate_id:
                 self._persist_term_and_vote(term=request.term, voted_for=request.candidate_id)
                 self.sim.volatile_state[self.node_id]["role"] = RaftRole.FOLLOWER.value
+                self._clear_pre_vote()
                 grant = True
                 self.reset_election_timeout(reason="vote-granted")
         self.sim._record(
