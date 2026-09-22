@@ -271,6 +271,7 @@ class LeadershipTransfer:
                 f"leadership transferee {transferee_id!r} did not win the next-term election"
             )
 
+        self.transfer_transport.complete_timeout_now(attempt_id)
         result = LeadershipTransferResult(
             previous_leader_id=self.leader.node_id,
             new_leader_id=transferee_id,
