@@ -359,6 +359,50 @@ class Simulator:
             delivered += 1
         return delivered
 
+    def run_until_time(self, deadline: int) -> int:
+        """Deliver queued events due by deadline, then advance logical time.
+
+        Events scheduled after the deadline remain queued. This gives bounded
+        control-plane code a deterministic response window without draining future
+        election timers, heartbeats, or unrelated scenario work.
+        """
+        if deadline < self.time:
+            raise ValueError("deadline cannot be earlier than current simulator time")
+
+        delivered = 0
+        while self._queue and self._queue[0].time <= deadline:
+            event = heapq.heappop(self._queue)
+            self.time = event.time
+            message = event.message
+            if not self._alive[message.dst]:
+                self._record(
+                    "discard-crashed",
+                    src=message.src,
+                    dst=message.dst,
+                    ordinal=message.ordinal,
+                    payload=message.payload,
+                )
+                delivered += 1
+                continue
+
+            delivery_dst = message.delivery_dst or message.dst
+            handler = self._handlers.get(delivery_dst)
+            if handler is None:
+                raise KeyError(f"no handler registered for node {delivery_dst!r}")
+
+            self._record(
+                "deliver",
+                src=message.src,
+                dst=message.dst,
+                ordinal=message.ordinal,
+                payload=message.payload,
+            )
+            handler(self, message)
+            delivered += 1
+
+        self.time = deadline
+        return delivered
+
     def run_scenario(self, actions: tuple[ScenarioAction, ...]) -> list[TraceRecord]:
         for action in actions:
             if action.kind == "send":

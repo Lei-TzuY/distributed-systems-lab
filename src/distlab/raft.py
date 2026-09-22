@@ -612,7 +612,7 @@ class RaftNode:
 
     def _handle_pre_vote_response(self, response: PreVoteResponse) -> None:
         if response.term > self.current_term:
-            self._advance_term(response.term)
+            self._advance_term(response.term, rearm_if_leader=True)
             return
         volatile = self.sim.volatile_state[self.node_id]
         prospective_term = volatile.get("pre_vote_term")
@@ -664,7 +664,7 @@ class RaftNode:
 
     def _handle_request_vote_response(self, response: RequestVoteResponse) -> None:
         if response.term > self.current_term:
-            self._advance_term(response.term)
+            self._advance_term(response.term, rearm_if_leader=True)
             return
         if response.term != self.current_term or self.role is not RaftRole.CANDIDATE:
             return
@@ -721,7 +721,7 @@ class RaftNode:
 
     def _handle_append_entries_response(self, response: AppendEntriesResponse) -> None:
         if response.term > self.current_term:
-            self._advance_term(response.term)
+            self._advance_term(response.term, rearm_if_leader=True)
             return
         self.sim._record(
             "raft-append-response",
@@ -746,15 +746,18 @@ class RaftNode:
         log = self.log_view.merge_after(prev_log_index, entries)
         self._persist_log(log)
 
-    def _advance_term(self, term: int) -> None:
+    def _advance_term(self, term: int, *, rearm_if_leader: bool = False) -> None:
         if term <= self.current_term:
             return
+        was_leader = self.role is RaftRole.LEADER
         self._persist_term_and_vote(term=term, voted_for=None)
         volatile = self.sim.volatile_state[self.node_id]
         volatile["role"] = RaftRole.FOLLOWER.value
         volatile["votes_received"] = set()
         self._clear_pre_vote()
         self.sim._record("raft-term-advance", node=self.node_id, term=term)
+        if rearm_if_leader and was_leader:
+            self.reset_election_timeout(reason="term-advance")
 
     def _persist_term_and_vote(self, *, term: int, voted_for: str | None) -> None:
         persistent = self.sim.persistent_state[self.node_id]
