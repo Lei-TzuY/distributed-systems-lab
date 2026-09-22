@@ -467,6 +467,13 @@ class RaftNode:
         """Reconstruct Raft volatile state at the simulator restart boundary."""
         if sim is not self.sim:
             raise ValueError("restart callback invoked by a different simulator")
+        active = self.cluster.active_leader_generations.get(self.node_id)
+        if active is not None:
+            self.cluster._notify_leader_retired(
+                self.node_id,
+                active[0],
+                reason="node-restart",
+            )
         self._validate_persistent_log()
         self._election_timer_generation += 1
         self._election_timer_deadline = None
@@ -801,6 +808,8 @@ class RaftNode:
             self._become_leader(response.term)
 
     def _handle_append_entries(self, src: str, request: AppendEntries) -> None:
+        previous_term = self.current_term
+        was_leader = self.role is RaftRole.LEADER
         if request.term > self.current_term:
             self._advance_term(request.term)
         success = False
@@ -810,6 +819,12 @@ class RaftNode:
             volatile["role"] = RaftRole.FOLLOWER.value
             volatile["votes_received"] = set()
             self._clear_pre_vote()
+            if was_leader and request.term == previous_term:
+                self.cluster._notify_leader_retired(
+                    self.node_id,
+                    previous_term,
+                    reason="append-entries",
+                )
             self.reset_election_timeout(reason="append-entries")
             if self._prefix_matches(request.prev_log_index, request.prev_log_term):
                 self._merge_entries(request.prev_log_index, request.entries)
