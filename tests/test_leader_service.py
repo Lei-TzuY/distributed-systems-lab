@@ -47,7 +47,6 @@ def _service_cluster() -> tuple[
 def test_generation_fenced_service_commits_write_and_linearizable_read() -> None:
     _, cluster, supervisor, kv, clients, service = _service_cluster()
     identity = supervisor.runtime_identity("n1")
-    safety = RaftSafetyHarness(cluster)
 
     written = service.write(
         "n1",
@@ -79,7 +78,8 @@ def test_generation_fenced_service_commits_write_and_linearizable_read() -> None
         "read-1",
     ]
     assert SingleKeyKVLinearizabilityChecker().check(clients.history).linearizable is True
-    safety.checkpoint()
+    kv.applier.assert_state_machine_safety()
+    RaftSafetyHarness(cluster).checkpoint()
 
 
 def test_stale_generation_is_rejected_before_client_history_mutation() -> None:
@@ -162,6 +162,8 @@ def test_generation_loss_after_commit_keeps_write_pending_for_exact_retry(
 
     monkeypatch.setattr(kv, "apply_committed", original_apply)
     leader.start_election()
+    sim.run()
+    assert leader.role is RaftRole.LEADER
     second = supervisor.runtime_identity("n1")
     result = service.retry_write(
         "n1",
@@ -181,10 +183,23 @@ def test_generation_loss_after_commit_keeps_write_pending_for_exact_retry(
 
 
 def test_pending_write_retries_on_transferred_leader_with_current_term_barrier() -> None:
-    sim, cluster, supervisor, kv, clients, service = _service_cluster()
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3", "n4", "n5"))
+    supervisor = LeaderRuntimeSupervisor(
+        cluster,
+        heartbeat_interval=3,
+        response_timeout=2,
+    )
+    cluster.node("n1").start_election()
+    sim.run()
+    assert cluster.node("n1").role is RaftRole.LEADER
+    kv = ReplicatedKV(cluster)
+    clients = KVClientHistory(kv)
+    service = LeaderKVService(supervisor, kv, clients)
     first = supervisor.runtime_identity("n1")
-    sim.crash("n2")
-    sim.crash("n3")
+
+    for node_id in ("n2", "n3", "n4", "n5"):
+        sim.crash(node_id)
 
     with pytest.raises(LeaderWriteQuorumUnavailable):
         service.write(
@@ -197,6 +212,7 @@ def test_pending_write_retries_on_transferred_leader_with_current_term_barrier()
             max_attempts_per_peer=1,
         )
 
+    assert cluster.node("n1").commit_index == 0
     pending = clients.pending_write("write-1")
     assert pending is not None
     assert clients.history.completed() == ()
@@ -205,6 +221,7 @@ def test_pending_write_retries_on_transferred_leader_with_current_term_barrier()
     sim.restart("n3")
     transfer = LeadershipTransfer(cluster.node("n1")).transfer("n2")
     assert transfer.new_leader_id == "n2"
+    assert transfer.commit_index == 0
     second = supervisor.runtime_identity("n2")
 
     result = service.retry_write(
@@ -216,6 +233,7 @@ def test_pending_write_retries_on_transferred_leader_with_current_term_barrier()
 
     assert result.leader_id == "n2"
     assert result.term == 2
+    assert result.commit_index >= 2
     assert kv.get("n2", "x") == "one"
     assert clients.pending_write("write-1") is None
     barriers = [
@@ -227,8 +245,8 @@ def test_pending_write_retries_on_transferred_leader_with_current_term_barrier()
     ]
     assert barriers
     assert SingleKeyKVLinearizabilityChecker().check(clients.history).linearizable is True
+    kv.applier.assert_state_machine_safety()
     RaftSafetyHarness(cluster).checkpoint()
-
 
 def test_leadership_transfer_fences_old_service_token_and_new_leader_can_read() -> None:
     _, cluster, supervisor, _, clients, service = _service_cluster()
