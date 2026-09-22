@@ -29,11 +29,13 @@ deterministic simulator
 
 ## Checkpoint scope
 
-This is a correctness laboratory, not a production distributed database. The first checkpoint deliberately stops before new architectural phases such as snapshot/install-snapshot, log compaction, membership changes, additional consensus protocols, or real-network deployment.
+This is a correctness laboratory, not a production distributed database. The original correctness checkpoint remains the compatibility boundary for deterministic replay, failure artifacts, and minimization, but the repository has now promoted beyond that checkpoint through bounded Phase 2 projects.
 
-Those are Phase 2 work and should only begin as explicit bounded projects; they are not automatic follow-ons merely to create repository activity.
+Integrated Phase 2 capabilities include snapshot/install-snapshot and compaction, membership changes with joint consensus, leadership transfer, pre-vote, CheckQuorum, bounded heartbeat control, per-node leader runtime generations, and generation-fenced KV authority. The deterministic campaign path now validates leader-generation authority without changing its replayable message schedule.
 
-See [`docs/architecture.md`](docs/architecture.md) for invariants and [`docs/stability-checkpoint.md`](docs/stability-checkpoint.md) for the maintenance boundary.
+Broader consensus protocols, real-network deployment, and production storage/networking remain future architectural phases rather than filler follow-ons.
+
+See [`docs/architecture.md`](docs/architecture.md) for invariants and [`docs/stability-checkpoint.md`](docs/stability-checkpoint.md) for the compatibility boundary.
 
 ## Development
 

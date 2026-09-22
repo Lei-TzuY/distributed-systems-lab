@@ -5,17 +5,13 @@ from dataclasses import dataclass
 from .client_history import KVClientHistory
 from .commit_recovery import CommitRecoveryBarrier
 from .kv import ClientRequest, ClientRequestConflict, Delete, Put, ReplicatedKV
-from .leader_runtime import (
-    LeaderRuntimeIdentity,
-    LeaderRuntimeSupervisor,
-    LeaderRuntimeUnavailable,
-    StaleLeaderRuntimeGeneration,
-)
+from .leader_authority import LeaderGenerationGuard
+from .leader_runtime import LeaderRuntimeIdentity, LeaderRuntimeSupervisor
 from .linearizability import Get
 from .linearizable_read import LinearizableKVReader
 from .membership import ReconfigurableRaftCluster
 from .membership_replication import MembershipAwareLeaderReplicator
-from .raft import LogEntry, RaftNode, RaftRole
+from .raft import LogEntry, RaftNode
 from .replication import LeaderReplicator, ReplicationError, ReplicationResponseMissing
 
 
@@ -75,6 +71,7 @@ class LeaderKVService:
         self.supervisor = supervisor
         self.cluster = supervisor.cluster
         self.sim = self.cluster.sim
+        self.authority = LeaderGenerationGuard(self.cluster)
         self.kv = kv
         self.clients = clients if clients is not None else KVClientHistory(kv)
 
@@ -384,23 +381,7 @@ class LeaderKVService:
     def _require_generation(
         self, leader_id: str, expected_generation: int
     ) -> LeaderRuntimeIdentity:
-        identity = self.supervisor.runtime_identity(leader_id)
-        if identity.generation != expected_generation:
-            raise StaleLeaderRuntimeGeneration(
-                f"leader runtime generation {expected_generation} is stale; "
-                f"active generation is {identity.generation}"
-            )
-        node = self.cluster.node(leader_id)
-        if (
-            not self.sim.is_alive(leader_id)
-            or node.role is not RaftRole.LEADER
-            or node.current_term != identity.term
-        ):
-            raise LeaderRuntimeUnavailable(
-                f"node {leader_id!r} no longer owns runtime generation "
-                f"{expected_generation}"
-            )
-        return identity
+        return self.authority.require(leader_id, expected_generation)
 
     def _new_replicator(self, leader: RaftNode) -> LeaderReplicator:
         if isinstance(self.cluster, ReconfigurableRaftCluster):

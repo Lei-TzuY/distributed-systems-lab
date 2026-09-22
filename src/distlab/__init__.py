@@ -19,6 +19,7 @@ from .kv import (
     Put,
     ReplicatedKV,
 )
+from .leader_authority import LeaderGenerationGuard
 from .leader_liveness import (
     LeaderAuthorityLost,
     LeaderLivenessError,
@@ -151,6 +152,7 @@ __all__ = [
     "LeaderAuthorityLost",
     "LeaderCompletenessChecker",
     "LeaderCompletenessViolation",
+    "LeaderGenerationGuard",
     "LeaderHeartbeatController",
     "LeaderLivenessError",
     "LeaderLogObservation",
