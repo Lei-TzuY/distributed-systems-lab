@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .commit_recovery import append_current_term_barrier
 from .membership import (
     MembershipChangeError,
     ReconfigurableRaftCluster,
@@ -231,6 +232,71 @@ def _persist_membership_commit_watermark(
             state[_MEMBERSHIP_COMMIT_INDEX] = index
 
 
+def _durable_membership_commit_index(cluster: ReconfigurableRaftCluster) -> int:
+    return max(
+        (
+            int(cluster.sim.persistent_state[node_id].get(_MEMBERSHIP_COMMIT_INDEX, 0))
+            for node_id in cluster.node_ids
+        ),
+        default=0,
+    )
+
+
+def _install_committed_membership(
+    cluster: ReconfigurableRaftCluster,
+    *,
+    leader_id: str,
+    index: int,
+    command: MembershipCommand,
+) -> bool:
+    """Make one objectively committed membership entry immediately authoritative."""
+
+    configuration = cluster.voting_configuration
+    if isinstance(command, JointConsensusCommand):
+        proposed = frozenset(command.new_voters)
+        if configuration.new_voters is not None:
+            if configuration.new_voters != proposed:
+                raise MembershipChangeError(
+                    "live joint configuration conflicts with committed membership proposal"
+                )
+            return False
+        cluster.begin_joint_consensus(leader_id, command.new_voters)
+        cluster.sim._record(
+            "raft-membership-committed",
+            leader=leader_id,
+            term=cluster.node(leader_id).current_term,
+            index=index,
+            new_voters=command.new_voters,
+        )
+        return True
+
+    voters = frozenset(command.voters)
+    if configuration.new_voters is None:
+        if configuration.old_voters != voters:
+            raise MembershipChangeError(
+                "live stable configuration conflicts with committed finalization"
+            )
+        return False
+    if configuration.new_voters != voters:
+        raise MembershipChangeError(
+            "active joint configuration changed before committed finalization"
+        )
+    if leader_id not in voters:
+        raise MembershipChangeError(
+            "current leader must belong to the new voter configuration"
+        )
+
+    cluster.finalize_membership(leader_id)
+    cluster.sim._record(
+        "raft-membership-finalized",
+        leader=leader_id,
+        term=cluster.node(leader_id).current_term,
+        index=index,
+        voters=command.voters,
+    )
+    return True
+
+
 class ReplicatedMembershipTransition:
     """Drive one stable-to-joint-to-stable configuration transition through Raft.
 
@@ -247,10 +313,17 @@ class ReplicatedMembershipTransition:
         self.leader = leader
         self.cluster = leader.cluster
         self.sim = leader.sim
+        active = self.cluster.active_leader_generations.get(leader.node_id)
+        if active is None or active[0] != leader.current_term:
+            raise MembershipChangeError(
+                "membership transition requires an active leader generation"
+            )
         self._term = leader.current_term
+        self._generation = active[1]
         self._pending_index: int | None = None
         self._pending_command: MembershipCommand | None = None
         self._require_current_leader()
+        self._recover_pending_command()
 
     @property
     def pending_index(self) -> int | None:
@@ -291,13 +364,11 @@ class ReplicatedMembershipTransition:
             raise MembershipChangeError("pending membership command is not a joint proposal")
 
         _persist_membership_commit_watermark(self.cluster, index=index, command=command)
-        self.cluster.begin_joint_consensus(self.leader.node_id, command.new_voters)
-        self.sim._record(
-            "raft-membership-committed",
-            leader=self.leader.node_id,
-            term=self._term,
+        _install_committed_membership(
+            self.cluster,
+            leader_id=self.leader.node_id,
             index=index,
-            new_voters=command.new_voters,
+            command=command,
         )
         self._clear_pending()
         return True
@@ -310,16 +381,17 @@ class ReplicatedMembershipTransition:
             raise MembershipChangeError("pending membership command is not a finalization proposal")
 
         configuration = self.cluster.voting_configuration
-        if configuration.new_voters != frozenset(command.voters):
+        voters = frozenset(command.voters)
+        if configuration.new_voters is not None and configuration.new_voters != voters:
             raise MembershipChangeError("active joint configuration changed before finalization")
+        if configuration.new_voters is None and configuration.old_voters != voters:
+            raise MembershipChangeError("stable configuration changed before finalization")
         _persist_membership_commit_watermark(self.cluster, index=index, command=command)
-        self.cluster.finalize_membership(self.leader.node_id)
-        self.sim._record(
-            "raft-membership-finalized",
-            leader=self.leader.node_id,
-            term=self._term,
+        _install_committed_membership(
+            self.cluster,
+            leader_id=self.leader.node_id,
             index=index,
-            voters=command.voters,
+            command=command,
         )
         self._clear_pending()
         return True
@@ -392,6 +464,7 @@ class ReplicatedMembershipTransition:
         if max_attempts_per_peer <= 0:
             raise ValueError("max_attempts_per_peer must be positive")
         self._require_current_leader()
+        self._ensure_current_term_commit_target()
 
         replicator = MembershipAwareLeaderReplicator(self.leader)
         replicator.advance_commit_index()
@@ -409,6 +482,81 @@ class ReplicatedMembershipTransition:
                 return True
         return False
 
+    def _recover_pending_command(self) -> None:
+        committed = _durable_membership_commit_index(self.cluster)
+        log = self.leader.log_view
+        start = max(committed + 1, log.first_retained_index)
+        pending = [
+            (index, log.entry_at(index).command)
+            for index in range(start, log.last_index + 1)
+            if isinstance(
+                log.entry_at(index).command,
+                (JointConsensusCommand, StableConsensusCommand),
+            )
+        ]
+        if len(pending) > 1:
+            raise MembershipChangeError(
+                "leader log contains multiple uncommitted membership commands"
+            )
+        if not pending:
+            return
+
+        index, command = pending[0]
+        configuration = self.cluster.voting_configuration
+        if isinstance(command, JointConsensusCommand):
+            if configuration.is_joint:
+                raise MembershipChangeError(
+                    "uncommitted joint proposal conflicts with active joint configuration"
+                )
+            proposed = frozenset(command.new_voters)
+            if not proposed <= frozenset(self.cluster.node_ids):
+                raise MembershipChangeError(
+                    "uncommitted joint proposal references unknown nodes"
+                )
+        else:
+            voters = frozenset(command.voters)
+            if configuration.new_voters is None:
+                raise MembershipChangeError(
+                    "uncommitted finalization requires active joint consensus"
+                )
+            if configuration.new_voters != voters:
+                raise MembershipChangeError(
+                    "uncommitted finalization does not match active joint configuration"
+                )
+
+        self._pending_index = index
+        self._pending_command = command
+        self.sim._record(
+            "raft-membership-pending-recovered",
+            leader=self.leader.node_id,
+            term=self._term,
+            generation=self._generation,
+            index=index,
+            command_term=log.term_at(index),
+            phase="joint" if isinstance(command, JointConsensusCommand) else "finalize",
+        )
+
+    def _ensure_current_term_commit_target(self) -> None:
+        index = self._pending_index
+        if index is None:
+            return
+        log = self.leader.log_view
+        if log.term_at(index) == self._term:
+            return
+        for candidate in range(log.last_index, index, -1):
+            if log.term_at(candidate) == self._term:
+                return
+
+        barrier_index = append_current_term_barrier(self.leader)
+        self.sim._record(
+            "raft-membership-handoff-barrier",
+            leader=self.leader.node_id,
+            term=self._term,
+            generation=self._generation,
+            pending_index=index,
+            barrier_index=barrier_index,
+        )
+
     def _require_pending_command(self, expected_type):
         self._require_current_leader()
         command = self._pending_command
@@ -416,6 +564,13 @@ class ReplicatedMembershipTransition:
             raise MembershipChangeError("no membership proposal is pending")
         if not isinstance(command, expected_type):
             raise MembershipChangeError("pending membership command has a different phase")
+        if (
+            isinstance(command, StableConsensusCommand)
+            and self.leader.node_id not in command.voters
+        ):
+            raise MembershipChangeError(
+                "current leader must belong to the new voter configuration"
+            )
         return command
 
     def _require_no_pending_command(self) -> None:
@@ -429,5 +584,12 @@ class ReplicatedMembershipTransition:
     def _require_current_leader(self) -> None:
         if not self.sim.is_alive(self.leader.node_id):
             raise MembershipChangeError("membership transition requires a live current leader")
-        if self.leader.role is not RaftRole.LEADER or self.leader.current_term != self._term:
-            raise MembershipChangeError("membership transition leader is no longer current")
+        active = self.cluster.active_leader_generations.get(self.leader.node_id)
+        if (
+            self.leader.role is not RaftRole.LEADER
+            or self.leader.current_term != self._term
+            or active != (self._term, self._generation)
+        ):
+            raise MembershipChangeError(
+                "membership transition leader generation is no longer current"
+            )

@@ -181,6 +181,9 @@ def test_stable_finalization_waits_for_joint_quorum_commit() -> None:
 
     replicator.replicate("n4", max_attempts=3)
     assert replicator.commit_index == final_index
+    assert cluster.voting_configuration.old_voters == frozenset({"n1", "n4", "n5"})
+    assert cluster.voting_configuration.new_voters is None
+    assert transition.pending_index == final_index
     assert transition.finalize_if_committed(replicator)
 
     assert cluster.voting_configuration.old_voters == frozenset({"n1", "n4", "n5"})
