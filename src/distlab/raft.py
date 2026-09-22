@@ -427,6 +427,28 @@ class RaftNode:
         for peer in self.peers:
             self.sim.send(self.node_id, peer, request)
 
+    def step_down(self, *, reason: str) -> bool:
+        """Retire current leader authority without inventing a higher term."""
+        if not reason:
+            raise ValueError("leader step-down reason must be non-empty")
+        if not self.sim.is_alive(self.node_id):
+            raise RuntimeError(f"crashed node {self.node_id!r} cannot step down")
+        if self.role is not RaftRole.LEADER:
+            return False
+
+        volatile = self.sim.volatile_state[self.node_id]
+        volatile["role"] = RaftRole.FOLLOWER.value
+        volatile["votes_received"] = set()
+        self._clear_pre_vote()
+        self.sim._record(
+            "raft-leader-step-down",
+            node=self.node_id,
+            term=self.current_term,
+            reason=reason,
+        )
+        self.reset_election_timeout(reason=reason)
+        return True
+
     def send_append_entries(
         self,
         peer: str,
