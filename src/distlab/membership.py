@@ -98,6 +98,7 @@ class ReconfigurableRaftCluster(RaftCluster):
         self.sim = sim
         self.node_ids = node_ids
         self._leaders_by_term: dict[int, str] = {}
+        self._init_leadership_lifecycle()
         initial_configuration = VotingConfiguration(initial_voters)
         self._voting_configuration = initial_configuration
         self.nodes = {
@@ -116,7 +117,12 @@ class ReconfigurableRaftCluster(RaftCluster):
 
         self._voting_configuration = recover_voting_configuration(self, initial_configuration)
         for node_id, node in self.nodes.items():
-            sim.register(node_id, node.handle_message, restart_handler=node.handle_restart)
+            sim.register(
+                node_id,
+                node.handle_message,
+                crash_handler=node.handle_crash,
+                restart_handler=node.handle_restart,
+            )
         for node in self.nodes.values():
             node.reset_election_timeout(reason="initial")
 
