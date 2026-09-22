@@ -219,3 +219,35 @@ def test_invalid_delays_and_unknown_actions_are_rejected() -> None:
         assert "unknown scenario action" in str(exc)
     else:
         raise AssertionError("unknown scenario action must be rejected")
+
+
+def test_run_until_time_preserves_future_events_and_advances_clock() -> None:
+    deliveries: list[tuple[int, str, str, object]] = []
+    sim = Simulator()
+    sim.register("b", recording_handler(deliveries))
+
+    sim.send("a", "b", "early", delay=2)
+    sim.send("a", "b", "future", delay=5)
+
+    assert sim.run_until_time(3) == 1
+    assert sim.time == 3
+    assert deliveries == [(2, "a", "b", "early")]
+
+    sim.run()
+
+    assert deliveries == [
+        (2, "a", "b", "early"),
+        (5, "a", "b", "future"),
+    ]
+
+
+def test_run_until_time_rejects_deadline_before_current_time() -> None:
+    sim = Simulator()
+    sim.run_until_time(4)
+
+    try:
+        sim.run_until_time(3)
+    except ValueError as exc:
+        assert "earlier than current simulator time" in str(exc)
+    else:
+        raise AssertionError("past logical deadline must be rejected")
