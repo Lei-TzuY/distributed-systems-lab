@@ -163,7 +163,6 @@ class KVClientSession:
         )
         return session
 
-
     def invoke_write(
         self,
         operation_id: str,
@@ -256,7 +255,6 @@ class KVClientSession:
         )
         self._accept_service_write_result(operation_id, result)
         return result
-
 
     def linearizable_read(
         self,
@@ -372,7 +370,6 @@ class KVClientSession:
         self._pending_read = None
         return result
 
-
     def retry_linearizable_read(
         self,
         operation_id: str,
@@ -409,7 +406,6 @@ class KVClientSession:
 
     def pending_read(self) -> PendingSessionRead | None:
         return self._pending_read
-
 
     def _ensure_can_start_write(self, request_id: int) -> None:
         if self._pending is not None:
