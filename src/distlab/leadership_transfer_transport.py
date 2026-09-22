@@ -239,7 +239,8 @@ class LeadershipTransferTransport:
 
         retryable = reason == "transferee-not-caught-up"
         if (
-            active_identity == (request.leader_id, request.transferee_id, request.term)
+            reason is not None
+            and active_identity == (request.leader_id, request.transferee_id, request.term)
             and not retryable
         ):
             self._active_attempts.pop(request.attempt_id, None)
