@@ -1,7 +1,11 @@
 import pytest
 
 from distlab.heartbeat import LeaderHeartbeatController
-from distlab.leader_liveness import LeaderQuorumMonitor, LeaderQuorumUnavailable
+from distlab.leader_liveness import (
+    LeaderAuthorityLost,
+    LeaderQuorumMonitor,
+    LeaderQuorumUnavailable,
+)
 from distlab.raft import RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.replication import LeaderReplicator
@@ -132,3 +136,30 @@ def test_heartbeat_controller_rejects_overlapping_response_window() -> None:
             heartbeat_interval=2,
             response_timeout=3,
         )
+
+
+def test_higher_term_heartbeat_response_rearms_old_leader_timeout() -> None:
+    sim, cluster = _cluster_with_timeouts()
+    leader = cluster.node("n1")
+    controller = LeaderHeartbeatController(
+        LeaderQuorumMonitor(LeaderReplicator(leader)),
+        heartbeat_interval=3,
+        response_timeout=2,
+    )
+    sim.persistent_state["n2"]["current_term"] = 2
+    sim.persistent_state["n2"]["voted_for"] = None
+
+    with pytest.raises(LeaderAuthorityLost, match="leader role"):
+        controller.run(rounds=1)
+
+    assert sim.time == 7
+    assert leader.current_term == 2
+    assert leader.role is RaftRole.FOLLOWER
+    resets = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-election-timeout-reset"
+        and record.details["node"] == "n1"
+    ]
+    assert resets[-1].details["reason"] == "term-advance"
+    assert resets[-1].details["deadline"] == 27
