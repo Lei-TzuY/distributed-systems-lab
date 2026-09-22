@@ -62,3 +62,22 @@ outcome, chosen evidence, violation classification, and entire trace to match.
 `incomplete` is intentionally not a safety failure: faults may prevent a quorum
 without violating Paxos safety. `SeededPaxosCampaign` stops early only on an
 actual `PaxosSafetyViolation`.
+
+## Multi-decree replicated-log foundation
+
+`PaxosLogCluster` composes independent Paxos decrees into positive integer log slots.
+Each acceptor persists promised proposal, accepted value, and accept history per slot;
+learned decisions are also durable per slot.
+
+A slot may become chosen independently of earlier slots, but externally consumable
+`chosen_prefix()` / `learned_prefix()` stop at the first missing slot. This preserves
+ordered log application while allowing consensus work for later slots to proceed.
+
+`PaxosLogSafetyHarness` independently reconstructs majority evidence per slot and
+rejects conflicting chosen values, forged learned decisions without quorum evidence,
+or divergent learned prefixes. Crash/restart preserves slot promises, accepted state,
+learned gaps, and the proposer's durable round allocator.
+
+This remains multi-decree Paxos rather than Multi-Paxos: each slot performs its own
+Phase 1 and Phase 2. Stable-leader Phase-1 amortization is deliberately deferred until
+the slot-indexed durability and ordered-prefix invariants are established.
