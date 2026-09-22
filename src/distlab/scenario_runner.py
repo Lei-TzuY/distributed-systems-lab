@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from .client_history import KVClientHistory
 from .kv import ClientRequest, Delete, Put, ReplicatedKV
+from .leader_authority import LeaderGenerationGuard
+from .leader_runtime import LeaderRuntimeError, LeaderRuntimeIdentity
 from .lifecycle import NodeLifecycleKind, SeededLifecycleSchedule
 from .linearizability import (
     LinearizabilityResult,
@@ -15,7 +17,7 @@ from .raft import LogEntry, RaftCluster, RaftRole
 from .raft_invariants import RaftSafetyHarness
 from .randomized_faults import SeededFaultSchedule
 from .randomized_workload import ClientOperationKind, SeededClientWorkloadSchedule
-from .replication import LeaderReplicator, ReplicationResponseMissing
+from .replication import LeaderReplicator, ReplicationError, ReplicationResponseMissing
 from .simulator import Simulator, TraceRecord
 
 
@@ -105,6 +107,7 @@ class ReplicatedKVScenarioRunner:
         sim = Simulator(fault_plan=self.faults.to_fault_plan())
         cluster = RaftCluster(sim, self.node_ids)
         safety = RaftSafetyHarness(cluster)
+        authority = LeaderGenerationGuard(cluster)
         leader = cluster.node(self.leader_id)
         leader.start_election()
         sim.run()
@@ -158,6 +161,7 @@ class ReplicatedKVScenarioRunner:
                     raise ScenarioExecutionError(
                         "retry action client does not match original write"
                     )
+                identity = self._current_leader_identity(authority)
                 request = clients.retry_write(action.retry_of)
                 self._drive_write_attempt(
                     leader,
@@ -168,6 +172,8 @@ class ReplicatedKVScenarioRunner:
                     action.retry_of,
                     action.node_id,
                     request,
+                    authority,
+                    identity,
                 )
                 continue
 
@@ -177,6 +183,7 @@ class ReplicatedKVScenarioRunner:
                 else Delete(action.key)
             )
             assert action.request_id is not None
+            identity = self._current_leader_identity(authority)
             request = clients.invoke_write(
                 action.operation_id,
                 action.client_id,
@@ -192,6 +199,8 @@ class ReplicatedKVScenarioRunner:
                 action.operation_id,
                 action.node_id,
                 request,
+                authority,
+                identity,
             )
 
         link_fault_position = self._apply_link_fault_boundary(
@@ -292,16 +301,33 @@ class ReplicatedKVScenarioRunner:
         operation_id: str,
         response_node: str,
         request: ClientRequest,
+        authority: LeaderGenerationGuard,
+        identity: LeaderRuntimeIdentity,
     ) -> None:
+        self._require_leader_identity(authority, identity, stage="append")
         self._append_to_leader(leader, request)
-        self._replicate_round(replicator)
+
+        self._replicate_generation_round(
+            replicator,
+            authority,
+            identity,
+            stage="first replication round",
+        )
         safety.checkpoint()
-        self._replicate_round(replicator)
+        self._replicate_generation_round(
+            replicator,
+            authority,
+            identity,
+            stage="second replication round",
+        )
         safety.checkpoint()
+
         for node_id in self.node_ids:
             if leader.sim.is_alive(node_id):
                 kv.apply_committed(node_id)
         safety.checkpoint()
+
+        self._require_leader_identity(authority, identity, stage="client response")
         if kv.has_applied_request(
             response_node,
             request.client_id,
@@ -335,3 +361,45 @@ class ReplicatedKVScenarioRunner:
                 replicator.replicate(peer, max_attempts=1)
             except ReplicationResponseMissing:
                 continue
+
+    def _replicate_generation_round(
+        self,
+        replicator: LeaderReplicator,
+        authority: LeaderGenerationGuard,
+        identity: LeaderRuntimeIdentity,
+        *,
+        stage: str,
+    ) -> None:
+        try:
+            self._replicate_round(replicator)
+        except ReplicationError as exc:
+            self._require_leader_identity(authority, identity, stage=stage)
+            raise ScenarioExecutionError(
+                f"configured leader replication failed during {stage}"
+            ) from exc
+        self._require_leader_identity(authority, identity, stage=stage)
+
+    def _current_leader_identity(
+        self,
+        authority: LeaderGenerationGuard,
+    ) -> LeaderRuntimeIdentity:
+        try:
+            return authority.current(self.leader_id)
+        except LeaderRuntimeError as exc:
+            raise ScenarioExecutionError(
+                "client write requires an active configured leader generation"
+            ) from exc
+
+    @staticmethod
+    def _require_leader_identity(
+        authority: LeaderGenerationGuard,
+        identity: LeaderRuntimeIdentity,
+        *,
+        stage: str,
+    ) -> None:
+        try:
+            authority.validate(identity)
+        except LeaderRuntimeError as exc:
+            raise ScenarioExecutionError(
+                f"configured leader lost generation authority during {stage}"
+            ) from exc
