@@ -157,7 +157,9 @@ def test_new_leader_recovers_uncommitted_finalize_but_outgoing_only_leader_canno
     assert leader.commit_index < finalize_index
 
     # n2 is still an active joint voter but is not part of the target stable set.
-    LeadershipTransfer(leader).transfer("n2")
+    cluster.node("n2").start_election()
+    sim.run()
+    assert cluster.node("n2").role is RaftRole.LEADER
     second = ReplicatedMembershipTransition(cluster.node("n2"))
 
     assert second.pending_index == finalize_index
