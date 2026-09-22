@@ -1,4 +1,4 @@
-from distlab.raft import LogEntry, RaftCluster, RaftRole
+from distlab.raft import LogEntry, RaftCluster, RaftRole, RequestVote
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
 
@@ -96,6 +96,32 @@ def test_pre_vote_checks_log_freshness_without_mutating_receiver_term_or_vote() 
     assert all(record.details["log_up_to_date"] is False for record in votes)
     assert not any(
         record.kind == "raft-election-start" and record.details["node"] == "n3"
+        for record in sim.trace
+    )
+    harness.checkpoint()
+
+
+def test_granting_real_vote_invalidates_active_pre_vote_round() -> None:
+    sim = Simulator()
+    cluster = RaftCluster(sim, ("n1", "n2", "n3"))
+    node = cluster.node("n1")
+    harness = RaftSafetyHarness(cluster)
+
+    node.start_pre_vote()
+    sim.send(
+        "n2",
+        "n1",
+        RequestVote(term=0, candidate_id="n2"),
+        delay=0,
+    )
+    sim.run()
+
+    assert node.current_term == 0
+    assert node.voted_for == "n2"
+    assert node.role is RaftRole.FOLLOWER
+    assert node.pre_votes_received == frozenset()
+    assert not any(
+        record.kind == "raft-election-start" and record.details["node"] == "n1"
         for record in sim.trace
     )
     harness.checkpoint()
