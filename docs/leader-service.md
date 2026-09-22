@@ -87,7 +87,7 @@ commit authority.
 This distinction is required when a client entry follows an uncommitted joint
 membership proposal: proposed new voters must receive that prefix before they
 can contribute the new-configuration majority required to commit it. Merely
-faning out to the currently live stable voters would deadlock the transition
+fanning out to the currently live stable voters would deadlock the transition
 behind otherwise healthy learners.
 
 Committed membership commands remain part of the durable applied Raft prefix and
