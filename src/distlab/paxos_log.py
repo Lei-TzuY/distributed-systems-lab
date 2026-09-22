@@ -299,30 +299,45 @@ class PaxosLogNode:
         expected: str
         if isinstance(payload, SlotPrepare):
             expected = payload.proposer_id
+            if expected not in self.cluster.nodes:
+                self._reject_source(message, expected, reason="unknown-proposer")
+                return
             if message.src != expected:
                 self._reject_source(message, expected)
                 return
             self._receive_prepare(payload)
         elif isinstance(payload, SlotPromise):
             expected = payload.acceptor_id
+            if expected not in self.cluster.nodes:
+                self._reject_source(message, expected, reason="unknown-acceptor")
+                return
             if message.src != expected:
                 self._reject_source(message, expected)
                 return
             self._receive_promise(payload)
         elif isinstance(payload, SlotAcceptRequest):
             expected = payload.proposer_id
+            if expected not in self.cluster.nodes:
+                self._reject_source(message, expected, reason="unknown-proposer")
+                return
             if message.src != expected:
                 self._reject_source(message, expected)
                 return
             self._receive_accept_request(payload)
         elif isinstance(payload, SlotAccepted):
             expected = payload.acceptor_id
+            if expected not in self.cluster.nodes:
+                self._reject_source(message, expected, reason="unknown-acceptor")
+                return
             if message.src != expected:
                 self._reject_source(message, expected)
                 return
             self._receive_accepted(payload)
         elif isinstance(payload, SlotLearn):
             expected = payload.proposer_id
+            if expected not in self.cluster.nodes:
+                self._reject_source(message, expected, reason="unknown-proposer")
+                return
             if message.src != expected:
                 self._reject_source(message, expected)
                 return
@@ -627,28 +642,51 @@ class PaxosLogSafetyHarness:
 
     def checkpoint(self) -> None:
         quorum = self.cluster.quorum_size
-        evidence: dict[tuple[int, ProposalNumber, Any], set[str]] = {}
-        per_slot_proposal_values: dict[tuple[int, ProposalNumber], Any] = {}
+        evidence: list[tuple[int, ProposalNumber, Any, set[str]]] = []
+        proposal_values: list[tuple[int, ProposalNumber, Any]] = []
 
         for node_id in self.cluster.node_ids:
             node = self.cluster.node(node_id)
             node._validate_durable_state()
             for accepted in node.accept_history:
-                proposal_key = (accepted.slot, accepted.proposal)
-                previous = per_slot_proposal_values.get(proposal_key)
-                if proposal_key in per_slot_proposal_values and previous != accepted.value:
+                matching_proposals = [
+                    value
+                    for slot, proposal, value in proposal_values
+                    if slot == accepted.slot and proposal == accepted.proposal
+                ]
+                if matching_proposals and matching_proposals[0] != accepted.value:
                     raise PaxosSafetyViolation(
                         f"slot {accepted.slot} proposal {accepted.proposal!r} "
                         "has conflicting accepted values"
                     )
-                per_slot_proposal_values[proposal_key] = accepted.value
-                evidence.setdefault(
-                    (accepted.slot, accepted.proposal, accepted.value),
-                    set(),
-                ).add(node_id)
+                if not matching_proposals:
+                    proposal_values.append(
+                        (accepted.slot, accepted.proposal, accepted.value)
+                    )
 
-        chosen_by_slot: dict[int, list[tuple[ProposalNumber, Any, tuple[str, ...]]]] = {}
-        for (slot, proposal, value), acceptors in evidence.items():
+                for item in evidence:
+                    slot, proposal, value, acceptors = item
+                    if (
+                        slot == accepted.slot
+                        and proposal == accepted.proposal
+                        and value == accepted.value
+                    ):
+                        acceptors.add(node_id)
+                        break
+                else:
+                    evidence.append(
+                        (
+                            accepted.slot,
+                            accepted.proposal,
+                            accepted.value,
+                            {node_id},
+                        )
+                    )
+
+        chosen_by_slot: dict[
+            int, list[tuple[ProposalNumber, Any, tuple[str, ...]]]
+        ] = {}
+        for slot, proposal, value, acceptors in evidence:
             if len(acceptors) >= quorum:
                 chosen_by_slot.setdefault(slot, []).append(
                     (proposal, value, tuple(sorted(acceptors)))
@@ -682,7 +720,10 @@ class PaxosLogSafetyHarness:
                 )
 
         prefixes = {
-            node_id: tuple(decision.value for decision in self.cluster.node(node_id).learned_prefix())
+            node_id: tuple(
+                decision.value
+                for decision in self.cluster.node(node_id).learned_prefix()
+            )
             for node_id in self.cluster.node_ids
         }
         for left_id, left in prefixes.items():
@@ -690,6 +731,6 @@ class PaxosLogSafetyHarness:
                 common = min(len(left), len(right))
                 if left[:common] != right[:common]:
                     raise PaxosSafetyViolation(
-                        f"learned Paxos log prefixes diverged between "
+                        "learned Paxos log prefixes diverged between "
                         f"{left_id!r} and {right_id!r}"
                     )
