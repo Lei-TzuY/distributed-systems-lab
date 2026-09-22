@@ -76,12 +76,19 @@ Invalid lifecycle projections are not treated as product failures; they are reje
 
 The package root exports the stable simulator/Raft/KV/history/campaign APIs plus the seeded lifecycle and schedule-reduction APIs needed to reproduce and reduce failures. Implementation helpers such as the generic deletion primitive remain private.
 
-## Next architectural phases
+## Promoted Phase 2 architecture
 
-The first correctness checkpoint stops here. The following are explicit Phase 2 projects, not automatic continuation work:
+The original deterministic correctness chain remains the replay/artifact compatibility boundary, but several bounded Phase 2 projects are now integrated:
 
 1. snapshot/install-snapshot correctness and log compaction
-2. membership changes with explicit safety invariants
-3. only later, if justified, broader protocols or real-network deployment
+2. membership changes with joint-consensus quorum rules
+3. leadership transfer, pre-vote, CheckQuorum, and bounded heartbeat control
+4. node-local leader runtime generations across election, crash/restart, and authority loss
+5. generation-fenced client KV reads/writes
+6. generation validation in deterministic scenario writes without changing their network-event schedule
 
-See `stability-checkpoint.md` for the maintenance contract.
+`LeaderGenerationGuard` is the shared authority primitive for client-facing service and scenario execution. It reads Raft's node-local active generation state and never schedules heartbeat/runtime work itself, keeping data-plane fencing separate from control-plane tick ownership.
+
+The next architectural frontier should therefore build on these integrated capabilities rather than reopening completed Phase 2 foundations. Autonomous runtime scheduling, higher-level operation orchestration, broader consensus protocols, and real-network deployment remain explicit future projects.
+
+See `stability-checkpoint.md` for the replay and artifact compatibility contract.
