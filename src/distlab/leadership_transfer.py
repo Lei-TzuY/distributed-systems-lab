@@ -255,12 +255,23 @@ class LeadershipTransfer:
                 retry_timeout_now(self.transfer_transport, attempt_id)
             except (RuntimeError, ValueError) as exc:
                 self.transfer_transport.cancel_timeout_now(attempt_id)
+                target_unavailable = not self.sim.is_alive(transferee_id)
+                reason = (
+                    "transferee crashed before TimeoutNow retry dispatch"
+                    if target_unavailable
+                    else f"TimeoutNow retry rejected: {exc}"
+                )
                 self._record_failure(
                     transferee_id,
                     previous_term,
                     stage="retry",
-                    reason=f"TimeoutNow retry rejected: {exc}",
+                    reason=reason,
                 )
+                if target_unavailable:
+                    raise LeadershipTransferTargetUnavailable(
+                        "leadership transferee "
+                        f"{transferee_id!r} crashed before TimeoutNow retry dispatch"
+                    ) from exc
                 raise LeadershipTransferIncomplete(
                     f"failed to retry TimeoutNow for leadership transferee {transferee_id!r}"
                 ) from exc
