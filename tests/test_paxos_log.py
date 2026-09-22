@@ -4,6 +4,7 @@ from distlab.paxos import PaxosSafetyViolation, ProposalNumber
 from distlab.paxos_log import (
     PaxosLogCluster,
     PaxosLogSafetyHarness,
+    SlotAccepted,
     SlotAcceptedValue,
     SlotPrepare,
 )
@@ -136,8 +137,6 @@ def test_unknown_acceptor_cannot_forge_multi_decree_quorum() -> None:
     sim = Simulator()
     cluster = PaxosLogCluster(sim, ("n1", "n2", "n3"))
     proposal = cluster.node("n1").start_proposal(1, "alpha", round_number=1)
-
-    from distlab.paxos_log import SlotAccepted
 
     sim.send(
         "forged",
