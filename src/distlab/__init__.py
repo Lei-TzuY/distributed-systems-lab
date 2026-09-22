@@ -61,6 +61,22 @@ from .linearizable_read import (
     LinearizableReadError,
     ReadQuorumUnavailable,
 )
+from .paxos import (
+    AcceptRequest,
+    Accepted,
+    AcceptedValue,
+    Learn,
+    LearnedDecision,
+    PaxosCluster,
+    PaxosError,
+    PaxosNode,
+    PaxosProposalActive,
+    PaxosSafetyHarness,
+    PaxosSafetyViolation,
+    Prepare,
+    Promise,
+    ProposalNumber,
+)
 from .raft import (
     AppendEntries,
     AppendEntriesResponse,
@@ -117,6 +133,20 @@ from .workload_minimizer import (
 
 __all__ = [
     "AppendEntries",
+    "AcceptRequest",
+    "Accepted",
+    "AcceptedValue",
+    "Learn",
+    "LearnedDecision",
+    "PaxosCluster",
+    "PaxosError",
+    "PaxosNode",
+    "PaxosProposalActive",
+    "PaxosSafetyHarness",
+    "PaxosSafetyViolation",
+    "Prepare",
+    "Promise",
+    "ProposalNumber",
     "AppendEntriesResponse",
     "AppliedEntry",
     "CampaignFailureArtifact",
