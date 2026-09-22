@@ -313,10 +313,17 @@ class ReplicatedMembershipTransition:
         self.leader = leader
         self.cluster = leader.cluster
         self.sim = leader.sim
+        active = self.cluster.active_leader_generations.get(leader.node_id)
+        if active is None or active[0] != leader.current_term:
+            raise MembershipChangeError(
+                "membership transition requires an active leader generation"
+            )
         self._term = leader.current_term
+        self._generation = active[1]
         self._pending_index: int | None = None
         self._pending_command: MembershipCommand | None = None
         self._require_current_leader()
+        self._recover_pending_command()
 
     @property
     def pending_index(self) -> int | None:
@@ -357,13 +364,11 @@ class ReplicatedMembershipTransition:
             raise MembershipChangeError("pending membership command is not a joint proposal")
 
         _persist_membership_commit_watermark(self.cluster, index=index, command=command)
-        self.cluster.begin_joint_consensus(self.leader.node_id, command.new_voters)
-        self.sim._record(
-            "raft-membership-committed",
-            leader=self.leader.node_id,
-            term=self._term,
+        _install_committed_membership(
+            self.cluster,
+            leader_id=self.leader.node_id,
             index=index,
-            new_voters=command.new_voters,
+            command=command,
         )
         self._clear_pending()
         return True
@@ -376,16 +381,17 @@ class ReplicatedMembershipTransition:
             raise MembershipChangeError("pending membership command is not a finalization proposal")
 
         configuration = self.cluster.voting_configuration
-        if configuration.new_voters != frozenset(command.voters):
+        voters = frozenset(command.voters)
+        if configuration.new_voters is not None and configuration.new_voters != voters:
             raise MembershipChangeError("active joint configuration changed before finalization")
+        if configuration.new_voters is None and configuration.old_voters != voters:
+            raise MembershipChangeError("stable configuration changed before finalization")
         _persist_membership_commit_watermark(self.cluster, index=index, command=command)
-        self.cluster.finalize_membership(self.leader.node_id)
-        self.sim._record(
-            "raft-membership-finalized",
-            leader=self.leader.node_id,
-            term=self._term,
+        _install_committed_membership(
+            self.cluster,
+            leader_id=self.leader.node_id,
             index=index,
-            voters=command.voters,
+            command=command,
         )
         self._clear_pending()
         return True
@@ -458,6 +464,7 @@ class ReplicatedMembershipTransition:
         if max_attempts_per_peer <= 0:
             raise ValueError("max_attempts_per_peer must be positive")
         self._require_current_leader()
+        self._ensure_current_term_commit_target()
 
         replicator = MembershipAwareLeaderReplicator(self.leader)
         replicator.advance_commit_index()
