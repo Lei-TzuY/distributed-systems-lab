@@ -755,6 +755,7 @@ class RaftNode:
         volatile["votes_received"] = set()
         self._clear_pre_vote()
         self.sim._record("raft-term-advance", node=self.node_id, term=term)
+        self.reset_election_timeout(reason="term-advance")
 
     def _persist_term_and_vote(self, *, term: int, voted_for: str | None) -> None:
         persistent = self.sim.persistent_state[self.node_id]
