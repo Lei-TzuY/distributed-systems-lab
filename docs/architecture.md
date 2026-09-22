@@ -93,6 +93,20 @@ The original deterministic correctness chain remains the replay/artifact compati
 
 Membership transitions now treat objective Raft commit as the live quorum boundary: durable membership watermark and `VotingConfiguration` advance together. Uncommitted membership commands can be reconstructed by the next leader from the durable log, while the old transition controller is fenced by its retired leader generation. Older-term recovered proposals use an explicit current-term recovery barrier before commit.
 
-The next architectural frontier should therefore build on these integrated capabilities rather than reopening completed Phase 2 foundations. Autonomous runtime scheduling, higher-level operation orchestration, broader consensus protocols, and real-network deployment remain explicit future projects.
+The next architectural frontier should therefore build on these integrated capabilities rather than reopening completed Phase 2 foundations.
+
+## Phase 3 consensus breadth
+
+The first Phase 3 vertical slice adds crash-recoverable single-decree Paxos over the
+same deterministic simulator and fault model. It includes durable promise/accepted
+state, prepare/accept quorums, highest-accepted-value adoption, learner recovery, and
+an independent durable-evidence safety harness.
+
+This does not alter the original Raft replay/artifact compatibility boundary and does
+not claim Multi-Paxos. Autonomous runtime scheduling, higher-level operation
+orchestration, Multi-Paxos, and real-network deployment remain separate future
+projects.
+
+See `paxos.md` for the Phase 3 Paxos safety boundary.
 
 See `stability-checkpoint.md` for the replay and artifact compatibility contract.
