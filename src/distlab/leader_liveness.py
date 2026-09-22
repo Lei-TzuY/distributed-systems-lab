@@ -169,6 +169,148 @@ class LeaderQuorumMonitor:
         )
         return evidence
 
+    def check_window(self, *, response_timeout: int) -> LeaderQuorumEvidence:
+        """Confirm quorum from concurrent probes inside a bounded logical-time window."""
+        if response_timeout <= 0:
+            raise ValueError("response_timeout must be positive")
+
+        self._require_current_leader()
+        cluster = self.leader.cluster
+        configuration = (
+            cluster.voting_configuration
+            if isinstance(cluster, ReconfigurableRaftCluster)
+            else None
+        )
+        active_voters = (
+            configuration.voters
+            if configuration is not None
+            else frozenset(cluster.node_ids)
+        )
+        if self.leader.node_id not in active_voters:
+            self.leader.step_down(reason="check-quorum-leader-not-voter")
+            raise LeaderAuthorityLost("current leader is not an active voter")
+
+        probes = {}
+        for peer in sorted(active_voters - {self.leader.node_id}):
+            try:
+                probes[peer] = self.replicator.begin_activity_probe(peer)
+            except ReplicationError as exc:
+                self._raise_authority_loss(exc)
+
+        deadline = self.sim.time + response_timeout
+        self.sim._record(
+            "raft-check-quorum-window",
+            leader=self.leader.node_id,
+            term=self._term,
+            deadline=deadline,
+            voter_count=len(active_voters),
+        )
+        self.sim.run_until_time(deadline)
+
+        try:
+            self._require_current_leader()
+        except LeaderAuthorityLost as exc:
+            self.sim._record(
+                "raft-check-quorum-authority-lost",
+                leader=self.leader.node_id,
+                monitor_term=self._term,
+                current_term=self.leader.current_term,
+                role=self.leader.role.value,
+                reason=str(exc),
+            )
+            raise
+
+        if configuration is not None and cluster.voting_configuration is not configuration:
+            self.sim._record(
+                "raft-check-quorum-membership-changed",
+                leader=self.leader.node_id,
+                term=self._term,
+                acknowledged_voters=(self.leader.node_id,),
+            )
+            self.leader.step_down(reason="check-quorum-membership-changed")
+            raise LeaderQuorumMembershipChanged(
+                "voting configuration changed during CheckQuorum round"
+            )
+
+        acknowledged = {self.leader.node_id}
+        acknowledged_peers: list[str] = []
+        for peer, probe in probes.items():
+            try:
+                active = self.replicator.finish_activity_probe(probe)
+            except ReplicationError as exc:
+                self._raise_authority_loss(exc)
+            if active:
+                acknowledged.add(peer)
+                acknowledged_peers.append(peer)
+
+        if configuration is not None and cluster.voting_configuration is not configuration:
+            self.leader.step_down(reason="check-quorum-membership-changed")
+            raise LeaderQuorumMembershipChanged(
+                "voting configuration changed during CheckQuorum round"
+            )
+
+        quorum_mode = (
+            "joint"
+            if configuration is not None and configuration.is_joint
+            else "stable"
+        )
+        old_voters = (
+            configuration.old_voters
+            if configuration is not None
+            else frozenset(cluster.node_ids)
+        )
+        old_majority = len(old_voters) // 2 + 1
+        new_majority = (
+            len(configuration.new_voters) // 2 + 1
+            if configuration is not None and configuration.new_voters is not None
+            else None
+        )
+        acknowledged_voters = tuple(sorted(acknowledged & active_voters))
+        has_quorum = (
+            configuration.has_quorum(acknowledged)
+            if configuration is not None
+            else len(acknowledged) >= len(cluster.node_ids) // 2 + 1
+        )
+
+        if not has_quorum:
+            self.sim._record(
+                "raft-check-quorum-failed",
+                leader=self.leader.node_id,
+                term=self._term,
+                acknowledged_peers=tuple(acknowledged_peers),
+                acknowledged_voters=acknowledged_voters,
+                quorum_mode=quorum_mode,
+                old_majority=old_majority,
+                new_majority=new_majority,
+                deadline=deadline,
+            )
+            self.leader.step_down(reason="check-quorum-failed")
+            raise LeaderQuorumUnavailable(
+                f"leader {self.leader.node_id!r} could not confirm the active voting quorum"
+            )
+
+        evidence = LeaderQuorumEvidence(
+            leader=self.leader.node_id,
+            term=self._term,
+            acknowledged_peers=tuple(acknowledged_peers),
+            acknowledged_voters=acknowledged_voters,
+            quorum_mode=quorum_mode,
+            old_majority=old_majority,
+            new_majority=new_majority,
+        )
+        self.sim._record(
+            "raft-check-quorum",
+            leader=evidence.leader,
+            term=evidence.term,
+            acknowledged_peers=evidence.acknowledged_peers,
+            acknowledged_voters=evidence.acknowledged_voters,
+            quorum_mode=evidence.quorum_mode,
+            old_majority=evidence.old_majority,
+            new_majority=evidence.new_majority,
+            deadline=deadline,
+        )
+        return evidence
+
     def _require_current_leader(self) -> None:
         if not self.sim.is_alive(self.leader.node_id):
             raise LeaderAuthorityLost("CheckQuorum requires a live leader")
