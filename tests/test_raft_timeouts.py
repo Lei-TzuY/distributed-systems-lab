@@ -2,7 +2,7 @@ from distlab.raft import AppendEntries, RaftCluster, RaftRole
 from distlab.simulator import Simulator
 
 
-def test_earliest_deterministic_timeout_starts_election() -> None:
+def test_earliest_deterministic_timeout_starts_pre_vote() -> None:
     sim = Simulator()
     cluster = RaftCluster(
         sim,
@@ -13,10 +13,13 @@ def test_earliest_deterministic_timeout_starts_election() -> None:
     sim.run(max_events=1)
 
     assert sim.time == 5
-    assert cluster.node("n1").current_term == 1
-    assert cluster.node("n1").role is RaftRole.CANDIDATE
+    assert cluster.node("n1").current_term == 0
+    assert cluster.node("n1").role is RaftRole.FOLLOWER
+    assert cluster.node("n1").pre_votes_received == frozenset({"n1"})
     assert cluster.node("n2").current_term == 0
     assert cluster.node("n3").current_term == 0
+    starts = [record for record in sim.trace if record.kind == "raft-pre-vote-start"]
+    assert starts[-1].details["prospective_term"] == 1
 
 
 def test_timeout_driven_candidate_can_reach_leader() -> None:
@@ -27,7 +30,7 @@ def test_timeout_driven_candidate_can_reach_leader() -> None:
         election_timeouts={"n1": 5, "n2": 20, "n3": 30},
     )
 
-    sim.run(max_events=4)
+    sim.run(max_events=8)
 
     assert cluster.node("n1").role is RaftRole.LEADER
     assert cluster.leaders_by_term == {1: "n1"}
@@ -54,8 +57,14 @@ def test_append_entries_resets_timeout_and_stale_deadline_is_ignored() -> None:
     sim.run(max_events=1)
 
     assert sim.time == 6
-    assert cluster.node("n2").current_term == 2
-    assert cluster.node("n2").role is RaftRole.CANDIDATE
+    assert cluster.node("n2").current_term == 1
+    assert cluster.node("n2").role is RaftRole.FOLLOWER
+    pre_votes = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-pre-vote-start" and record.details["node"] == "n2"
+    ]
+    assert pre_votes[-1].details["prospective_term"] == 2
 
 
 def test_single_node_leader_invalidates_candidate_timeout() -> None:

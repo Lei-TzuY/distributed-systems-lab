@@ -51,7 +51,7 @@ def test_restart_invalidates_pre_crash_election_timeout_and_schedules_a_fresh_on
 
     sim.crash("n1")
     sim.restart("n1")
-    sim.run(max_events=2)
+    sim.run(max_events=5)
 
     node = cluster.node("n1")
     assert node.current_term == 1
@@ -62,6 +62,12 @@ def test_restart_invalidates_pre_crash_election_timeout_and_schedules_a_fresh_on
         if record.kind == "raft-election-timeout-stale" and record.details["node"] == "n1"
     ]
     assert len(stale) == 1
+    pre_votes = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-pre-vote-start" and record.details["node"] == "n1"
+    ]
+    assert len(pre_votes) == 1
     starts = [
         record
         for record in sim.trace

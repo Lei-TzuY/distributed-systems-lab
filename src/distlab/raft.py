@@ -47,6 +47,36 @@ class RequestVoteResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class PreVote:
+    term: int
+    candidate_id: str
+    last_log_index: int = 0
+    last_log_term: int = 0
+
+    def __post_init__(self) -> None:
+        if self.term <= 0:
+            raise ValueError("pre-vote term must be positive")
+        if self.last_log_index < 0:
+            raise ValueError("last_log_index must be non-negative")
+        if self.last_log_term < 0:
+            raise ValueError("last_log_term must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class PreVoteResponse:
+    term: int
+    voter_id: str
+    prospective_term: int
+    vote_granted: bool
+
+    def __post_init__(self) -> None:
+        if self.term < 0:
+            raise ValueError("term must be non-negative")
+        if self.prospective_term <= 0:
+            raise ValueError("prospective_term must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class AppendEntries:
     term: int
     leader_id: str
@@ -258,6 +288,11 @@ class RaftNode:
         return frozenset(votes)
 
     @property
+    def pre_votes_received(self) -> frozenset[str]:
+        votes = self.sim.volatile_state[self.node_id].get("pre_votes_received", set())
+        return frozenset(votes)
+
+    @property
     def election_timeout(self) -> int | None:
         return self._election_timeout
 
@@ -329,9 +364,44 @@ class RaftNode:
         )
         self.reset_election_timeout(reason="restart")
 
+    def start_pre_vote(self) -> None:
+        """Probe for election quorum without mutating durable term or vote state."""
+        if not self.sim.is_alive(self.node_id):
+            raise RuntimeError(f"crashed node {self.node_id!r} cannot start a pre-vote")
+        if self.role is RaftRole.LEADER:
+            return
+
+        prospective_term = self.current_term + 1
+        volatile = self.sim.volatile_state[self.node_id]
+        volatile["pre_vote_term"] = prospective_term
+        volatile["pre_votes_received"] = {self.node_id}
+        self.sim._record(
+            "raft-pre-vote-start",
+            node=self.node_id,
+            prospective_term=prospective_term,
+            current_term=self.current_term,
+            last_log_index=self.last_log_index,
+            last_log_term=self.last_log_term,
+        )
+        if self._has_majority(1):
+            self._clear_pre_vote()
+            self.start_election()
+            return
+
+        self.reset_election_timeout(reason="pre-vote-start")
+        request = PreVote(
+            term=prospective_term,
+            candidate_id=self.node_id,
+            last_log_index=self.last_log_index,
+            last_log_term=self.last_log_term,
+        )
+        for peer in self.peers:
+            self.sim.send(self.node_id, peer, request)
+
     def start_election(self) -> None:
         if not self.sim.is_alive(self.node_id):
             raise RuntimeError(f"crashed node {self.node_id!r} cannot start an election")
+        self._clear_pre_vote()
         term = self.current_term + 1
         self._persist_term_and_vote(term=term, voted_for=self.node_id)
         volatile = self.sim.volatile_state[self.node_id]
@@ -401,6 +471,10 @@ class RaftNode:
             return
         if isinstance(payload, _ElectionTimeout):
             self._handle_election_timeout(payload)
+        elif isinstance(payload, PreVote):
+            self._handle_pre_vote(message.src, payload)
+        elif isinstance(payload, PreVoteResponse):
+            self._handle_pre_vote_response(payload)
         elif isinstance(payload, RequestVote):
             self._handle_request_vote(message.src, payload)
         elif isinstance(payload, RequestVoteResponse):
@@ -419,6 +493,10 @@ class RaftNode:
             reason = "destination-identity-mismatch"
         elif isinstance(payload, _ElectionTimeout):
             claimed_src = self.node_id
+        elif isinstance(payload, PreVote):
+            claimed_src = payload.candidate_id
+        elif isinstance(payload, PreVoteResponse):
+            claimed_src = payload.voter_id
         elif isinstance(payload, RequestVote):
             claimed_src = payload.candidate_id
         elif isinstance(payload, RequestVoteResponse):
@@ -481,7 +559,55 @@ class RaftNode:
         if self.role is RaftRole.LEADER:
             return
         self.sim._record("raft-election-timeout", node=self.node_id, generation=timeout.generation)
-        self.start_election()
+        self.start_pre_vote()
+
+    def _handle_pre_vote(self, src: str, request: PreVote) -> None:
+        log_up_to_date = self._candidate_log_is_up_to_date(request)
+        grant = request.term >= self.current_term + 1 and log_up_to_date
+        self.sim._record(
+            "raft-pre-vote",
+            voter=self.node_id,
+            candidate=request.candidate_id,
+            prospective_term=request.term,
+            current_term=self.current_term,
+            granted=grant,
+            log_up_to_date=log_up_to_date,
+            candidate_last_log_index=request.last_log_index,
+            candidate_last_log_term=request.last_log_term,
+            voter_last_log_index=self.last_log_index,
+            voter_last_log_term=self.last_log_term,
+        )
+        self.sim.send(
+            self.node_id,
+            src,
+            PreVoteResponse(
+                term=self.current_term,
+                voter_id=self.node_id,
+                prospective_term=request.term,
+                vote_granted=grant,
+            ),
+        )
+
+    def _handle_pre_vote_response(self, response: PreVoteResponse) -> None:
+        if response.term > self.current_term:
+            self._advance_term(response.term)
+            return
+        volatile = self.sim.volatile_state[self.node_id]
+        prospective_term = volatile.get("pre_vote_term")
+        if (
+            prospective_term is None
+            or response.prospective_term != prospective_term
+            or prospective_term != self.current_term + 1
+            or self.role is RaftRole.LEADER
+        ):
+            return
+        if not response.vote_granted:
+            return
+        votes = volatile.setdefault("pre_votes_received", set())
+        votes.add(response.voter_id)
+        if self._has_majority(len(votes)):
+            self._clear_pre_vote()
+            self.start_election()
 
     def _handle_request_vote(self, src: str, request: RequestVote) -> None:
         if request.term > self.current_term:
@@ -493,6 +619,7 @@ class RaftNode:
             if voted_for is None or voted_for == request.candidate_id:
                 self._persist_term_and_vote(term=request.term, voted_for=request.candidate_id)
                 self.sim.volatile_state[self.node_id]["role"] = RaftRole.FOLLOWER.value
+                self._clear_pre_vote()
                 grant = True
                 self.reset_election_timeout(reason="vote-granted")
         self.sim._record(
@@ -535,6 +662,7 @@ class RaftNode:
             volatile = self.sim.volatile_state[self.node_id]
             volatile["role"] = RaftRole.FOLLOWER.value
             volatile["votes_received"] = set()
+            self._clear_pre_vote()
             self.reset_election_timeout(reason="append-entries")
             if self._prefix_matches(request.prev_log_index, request.prev_log_term):
                 self._merge_entries(request.prev_log_index, request.entries)
@@ -582,7 +710,7 @@ class RaftNode:
             match_index=response.match_index,
         )
 
-    def _candidate_log_is_up_to_date(self, request: RequestVote) -> bool:
+    def _candidate_log_is_up_to_date(self, request: RequestVote | PreVote) -> bool:
         if request.last_log_term != self.last_log_term:
             return request.last_log_term > self.last_log_term
         return request.last_log_index >= self.last_log_index
@@ -603,6 +731,7 @@ class RaftNode:
         volatile = self.sim.volatile_state[self.node_id]
         volatile["role"] = RaftRole.FOLLOWER.value
         volatile["votes_received"] = set()
+        self._clear_pre_vote()
         self.sim._record("raft-term-advance", node=self.node_id, term=term)
 
     def _persist_term_and_vote(self, *, term: int, voted_for: str | None) -> None:
@@ -628,9 +757,15 @@ class RaftNode:
             return
         self.cluster.record_leader(term, self.node_id)
         self.sim.volatile_state[self.node_id]["role"] = RaftRole.LEADER.value
+        self._clear_pre_vote()
         self._election_timer_generation += 1
         self._election_timer_deadline = None
         self.sim._record("raft-leader", node=self.node_id, term=term)
+
+    def _clear_pre_vote(self) -> None:
+        volatile = self.sim.volatile_state[self.node_id]
+        volatile["pre_vote_term"] = None
+        volatile["pre_votes_received"] = set()
 
     def _has_majority(self, votes: int) -> bool:
         return votes >= (len(self.cluster.node_ids) // 2 + 1)
@@ -660,4 +795,6 @@ class RaftNode:
         volatile = self.sim.volatile_state[self.node_id]
         volatile.setdefault("role", RaftRole.FOLLOWER.value)
         volatile.setdefault("votes_received", set())
+        volatile.setdefault("pre_vote_term", None)
+        volatile.setdefault("pre_votes_received", set())
         volatile.setdefault("commit_index", 0)
