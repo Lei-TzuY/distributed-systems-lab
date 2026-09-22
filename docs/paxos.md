@@ -38,3 +38,27 @@ learned decisions, and each proposer's last allocated round survive crash/restar
 This is single-decree Paxos, not Multi-Paxos. It does not add leader leases, log slots,
 configuration changes, batching, or production networking. Those require separate
 vertical slices with their own safety evidence.
+
+## Seeded campaign and exact replay
+
+Single-decree Paxos now participates in the repository's deterministic campaign
+model. Proposal choices, message faults, and node lifecycle transitions are
+compiled from seeds into explicit schedules before execution. The runner never
+consults randomness.
+
+`PaxosTrialArtifact` persists:
+
+- the explicit proposal schedule;
+- the exact message-fault schedule;
+- the exact crash/restart lifecycle schedule;
+- node membership and the final logical event budget;
+- the classified outcome (`chosen`, `incomplete`, or `safety_violation`);
+- objective chosen evidence when present;
+- any safety violation text;
+- the complete structured simulator trace.
+
+Replay reconstructs the scenario only from persisted schedules and requires the
+outcome, chosen evidence, violation classification, and entire trace to match.
+`incomplete` is intentionally not a safety failure: faults may prevent a quorum
+without violating Paxos safety. `SeededPaxosCampaign` stops early only on an
+actual `PaxosSafetyViolation`.
