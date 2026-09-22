@@ -125,6 +125,29 @@ class LeadershipTransferTransport:
         )
         return True
 
+    def complete_timeout_now(self, attempt_id: int) -> bool:
+        """Retire authority for a transfer attempt after its transferee wins.
+
+        Successful delivery intentionally keeps an attempt active while the
+        election is unresolved so callers may retransmit the same logical
+        TimeoutNow. Once the transfer has objectively completed, however, that
+        retry authority must not remain live in transport bookkeeping.
+        """
+
+        identity = self._active_attempts.pop(attempt_id, None)
+        self._attempt_configurations.pop(attempt_id, None)
+        if identity is None:
+            return False
+        leader_id, transferee_id, term = identity
+        self.sim._record(
+            "raft-timeout-now-completed",
+            leader=leader_id,
+            transferee=transferee_id,
+            term=term,
+            attempt_id=attempt_id,
+        )
+        return True
+
     def _active_attempt_for(self, leader_id: str, term: int) -> tuple[int, str] | None:
         for attempt_id, identity in self._active_attempts.items():
             active_leader, transferee_id, active_term = identity
