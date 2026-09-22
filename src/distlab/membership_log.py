@@ -564,7 +564,10 @@ class ReplicatedMembershipTransition:
             raise MembershipChangeError("no membership proposal is pending")
         if not isinstance(command, expected_type):
             raise MembershipChangeError("pending membership command has a different phase")
-        if isinstance(command, StableConsensusCommand) and self.leader.node_id not in command.voters:
+        if (
+            isinstance(command, StableConsensusCommand)
+            and self.leader.node_id not in command.voters
+        ):
             raise MembershipChangeError(
                 "current leader must belong to the new voter configuration"
             )
