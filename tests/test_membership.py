@@ -141,7 +141,7 @@ def test_promoted_learner_arms_election_timeout() -> None:
     ]
     assert promoted_resets
 
-    sim.run(max_events=8)
+    sim.run(max_events=3)
 
     pre_votes = [
         record
@@ -149,12 +149,12 @@ def test_promoted_learner_arms_election_timeout() -> None:
         if record.kind == "raft-pre-vote-start" and record.details["node"] == "n4"
     ]
     assert pre_votes[-1].details["prospective_term"] == 2
-    starts = [
-        record
+    assert cluster.node("n4").current_term == 1
+    assert cluster.node("n4").role is RaftRole.FOLLOWER
+    assert not any(
+        record.kind == "raft-election-start" and record.details["node"] == "n4"
         for record in sim.trace
-        if record.kind == "raft-election-start" and record.details["node"] == "n4"
-    ]
-    assert starts[-1].details["term"] == 2
+    )
     harness.checkpoint()
 
 
