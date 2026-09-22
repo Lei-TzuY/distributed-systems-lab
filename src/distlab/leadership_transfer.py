@@ -168,9 +168,30 @@ class LeadershipTransfer:
             last_log_index=target.last_log_index,
             commit_index=target.commit_index,
         )
-        attempt_id = self.transfer_transport.send_timeout_now(
-            self.leader.node_id, transferee_id, term=previous_term
-        )
+        try:
+            attempt_id = self.transfer_transport.send_timeout_now(
+                self.leader.node_id, transferee_id, term=previous_term
+            )
+        except (RuntimeError, ValueError) as exc:
+            target_unavailable = not self.sim.is_alive(transferee_id)
+            reason = (
+                "transferee crashed before TimeoutNow dispatch"
+                if target_unavailable
+                else f"TimeoutNow dispatch rejected: {exc}"
+            )
+            self._record_failure(
+                transferee_id,
+                previous_term,
+                stage="dispatch",
+                reason=reason,
+            )
+            if target_unavailable:
+                raise LeadershipTransferTargetUnavailable(
+                    f"leadership transferee {transferee_id!r} crashed before TimeoutNow dispatch"
+                ) from exc
+            raise LeadershipTransferIncomplete(
+                f"failed to dispatch TimeoutNow to leadership transferee {transferee_id!r}"
+            ) from exc
         event_budget = max(4, len(cluster.node_ids) * 4)
         for timeout_attempt in range(max_timeout_now_attempts):
             for _ in range(event_budget):
