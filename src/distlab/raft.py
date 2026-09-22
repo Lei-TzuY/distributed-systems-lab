@@ -764,6 +764,7 @@ class RaftNode:
             self.start_election()
 
     def _handle_request_vote(self, src: str, request: RequestVote) -> None:
+        retired_leader = self.role is RaftRole.LEADER and request.term > self.current_term
         if request.term > self.current_term:
             self._advance_term(request.term)
         log_up_to_date = self._candidate_log_is_up_to_date(request)
@@ -776,6 +777,8 @@ class RaftNode:
                 self._clear_pre_vote()
                 grant = True
                 self.reset_election_timeout(reason="vote-granted")
+        if retired_leader and not grant:
+            self.reset_election_timeout(reason="higher-term-vote-rejected")
         self.sim._record(
             "raft-vote",
             voter=self.node_id,
