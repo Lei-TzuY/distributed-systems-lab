@@ -127,7 +127,7 @@ def test_heartbeat_window_does_not_consume_response_scheduled_after_deadline() -
 
 
 def test_heartbeat_controller_rejects_overlapping_response_window() -> None:
-    sim, cluster = _cluster_with_timeouts()
+    _sim, cluster = _cluster_with_timeouts()
     monitor = LeaderQuorumMonitor(LeaderReplicator(cluster.node("n1")))
 
     with pytest.raises(ValueError, match="cannot exceed"):
