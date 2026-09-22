@@ -251,3 +251,28 @@ def test_run_until_time_rejects_deadline_before_current_time() -> None:
         assert "earlier than current simulator time" in str(exc)
     else:
         raise AssertionError("past logical deadline must be rejected")
+
+
+def test_crash_handler_runs_before_volatile_state_is_cleared() -> None:
+    observed: list[tuple[bool, dict[str, object]]] = []
+    sim = Simulator()
+
+    def on_crash(current: Simulator) -> None:
+        observed.append(
+            (
+                current.is_alive("n1"),
+                dict(current.volatile_state["n1"]),
+            )
+        )
+
+    sim.register(
+        "n1",
+        lambda _sim, _message: None,
+        crash_handler=on_crash,
+    )
+    sim.volatile_state["n1"]["role"] = "leader"
+
+    sim.crash("n1")
+
+    assert observed == [(False, {"role": "leader"})]
+    assert sim.volatile_state["n1"] == {}
