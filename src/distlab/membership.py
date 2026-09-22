@@ -98,6 +98,7 @@ class ReconfigurableRaftCluster(RaftCluster):
         self.sim = sim
         self.node_ids = node_ids
         self._leaders_by_term: dict[int, str] = {}
+        self._init_leadership_lifecycle()
         initial_configuration = VotingConfiguration(initial_voters)
         self._voting_configuration = initial_configuration
         self.nodes = {
@@ -116,7 +117,12 @@ class ReconfigurableRaftCluster(RaftCluster):
 
         self._voting_configuration = recover_voting_configuration(self, initial_configuration)
         for node_id, node in self.nodes.items():
-            sim.register(node_id, node.handle_message, restart_handler=node.handle_restart)
+            sim.register(
+                node_id,
+                node.handle_message,
+                crash_handler=node.handle_crash,
+                restart_handler=node.handle_restart,
+            )
         for node in self.nodes.values():
             node.reset_election_timeout(reason="initial")
 
@@ -367,6 +373,11 @@ class ReconfigurableRaftNode(RaftNode):
     def _handle_request_vote(self, src: str, request: RequestVote) -> None:
         voter_eligible = self.cluster.is_voter(self.node_id)
         candidate_eligible = self.cluster.is_voter(request.candidate_id)
+        retired_leader = (
+            self.role is RaftRole.LEADER
+            and candidate_eligible
+            and request.term > self.current_term
+        )
         if candidate_eligible and request.term > self.current_term:
             self._advance_term(request.term)
         log_up_to_date = self._candidate_log_is_up_to_date(request)
@@ -384,6 +395,8 @@ class ReconfigurableRaftNode(RaftNode):
                 self._clear_pre_vote()
                 grant = True
                 self.reset_election_timeout(reason="vote-granted")
+        if retired_leader and not grant:
+            self.reset_election_timeout(reason="higher-term-vote-rejected")
         self.sim._record(
             "raft-vote",
             voter=self.node_id,
