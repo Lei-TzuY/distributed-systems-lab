@@ -8,7 +8,7 @@ from distlab.leader_runtime import (
 )
 from distlab.leadership_transfer import LeadershipTransfer
 from distlab.membership import ReconfigurableRaftCluster
-from distlab.raft import RaftCluster, RaftRole
+from distlab.raft import LogEntry, RaftCluster, RaftRole, RequestVote
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
 
@@ -212,3 +212,56 @@ def test_reconfigurable_supervisor_uses_joint_quorum_for_heartbeat_runtime() -> 
     assert failure.details["quorum_mode"] == "joint"
     assert failure.details["old_majority"] == 2
     assert failure.details["new_majority"] == 2
+
+
+def test_rejected_higher_term_vote_retires_runtime_and_rearms_former_leader() -> None:
+    sim = Simulator()
+    sim.persistent_state["n1"]["log"] = (LogEntry(term=1, command="leader-only"),)
+    cluster = RaftCluster(
+        sim,
+        ("n1", "n2", "n3"),
+        election_timeouts={"n1": 10, "n2": 100, "n3": 100},
+    )
+    supervisor = LeaderRuntimeSupervisor(
+        cluster,
+        heartbeat_interval=3,
+        response_timeout=2,
+    )
+    cluster.node("n1").start_election()
+    sim.run(max_events=4)
+    assert cluster.node("n1").role is RaftRole.LEADER
+    generation = supervisor.runtime_identity("n1").generation
+
+    sim.send(
+        "n2",
+        "n1",
+        RequestVote(
+            term=2,
+            candidate_id="n2",
+            last_log_index=0,
+            last_log_term=0,
+        ),
+    )
+    sim.run(max_events=1)
+
+    node = cluster.node("n1")
+    assert node.current_term == 2
+    assert node.role is RaftRole.FOLLOWER
+    assert node.voted_for is None
+    with pytest.raises(LeaderRuntimeUnavailable):
+        supervisor.runtime_identity("n1")
+    retired = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-leader-runtime-retired"
+        and record.details["generation"] == generation
+    ]
+    assert retired[-1].details["reason"] == "higher-term-observed"
+    resets = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-election-timeout-reset"
+        and record.details["node"] == "n1"
+    ]
+    assert resets[-1].details["reason"] == "higher-term-vote-rejected"
+    assert resets[-1].details["deadline"] == 13
