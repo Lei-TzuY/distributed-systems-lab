@@ -141,8 +141,14 @@ def test_promoted_learner_arms_election_timeout() -> None:
     ]
     assert promoted_resets
 
-    sim.run(max_events=3)
+    sim.run(max_events=8)
 
+    pre_votes = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-pre-vote-start" and record.details["node"] == "n4"
+    ]
+    assert pre_votes[-1].details["prospective_term"] == 2
     starts = [
         record
         for record in sim.trace
