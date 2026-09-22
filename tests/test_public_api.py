@@ -4,6 +4,7 @@ import distlab
 def test_schedule_generation_and_reduction_are_public() -> None:
     expected = {
         "ClientWorkloadMinimizationResult",
+        "LeaderGenerationGuard",
         "LifecycleScheduleMinimizationResult",
         "NodeLifecycleAction",
         "NodeLifecycleKind",
