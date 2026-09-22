@@ -132,9 +132,9 @@ from .workload_minimizer import (
 )
 
 __all__ = [
+    "AcceptRequest",
     "Accepted",
     "AcceptedValue",
-    "AcceptRequest",
     "AppendEntries",
     "AppendEntriesResponse",
     "AppliedEntry",
@@ -207,9 +207,9 @@ __all__ = [
     "PaxosProposalActive",
     "PaxosSafetyHarness",
     "PaxosSafetyViolation",
-    "Prepare",
     "PreVote",
     "PreVoteResponse",
+    "Prepare",
     "Promise",
     "ProposalNumber",
     "Put",
