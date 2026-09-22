@@ -1,6 +1,5 @@
 import pytest
 
-from distlab.leadership_transfer import LeadershipTransfer
 from distlab.membership import MembershipChangeError, ReconfigurableRaftCluster
 from distlab.membership_log import ReplicatedMembershipTransition
 from distlab.membership_replication import MembershipAwareLeaderReplicator
@@ -85,6 +84,8 @@ def test_stable_membership_becomes_live_at_objective_commit_boundary() -> None:
 
 
 def test_new_leader_recovers_uncommitted_joint_and_commits_through_new_term_barrier() -> None:
+    from distlab.leadership_transfer import LeadershipTransfer
+
     sim, cluster = _cluster()
     first_leader = cluster.node("n1")
     first = ReplicatedMembershipTransition(first_leader)
