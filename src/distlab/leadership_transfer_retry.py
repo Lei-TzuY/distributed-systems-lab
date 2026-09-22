@@ -13,10 +13,10 @@ def retry_timeout_now(transport: LeadershipTransferTransport, attempt_id: int) -
     same logical Raft link, so deterministic drop/delay/partition semantics
     continue to apply.
 
-    A crashed or no-longer-caught-up transferee is rejected before enqueueing
-    the retry. The original attempt remains active and can still be retried
-    after the transferee is restarted or caught up, provided leader authority
-    and membership identity remain unchanged.
+    A crashed, no-longer-caught-up, or log-divergent transferee is rejected
+    before enqueueing the retry. The original attempt remains active and can
+    still be retried after the transferee is restarted or repaired, provided
+    leader authority and membership identity remain unchanged.
     """
 
     identity = transport._active_attempts.get(attempt_id)
@@ -40,6 +40,8 @@ def retry_timeout_now(transport: LeadershipTransferTransport, attempt_id: int) -
         or transferee.commit_index < leader.commit_index
     ):
         raise RuntimeError("leadership transfer retry requires a caught-up transferee")
+    if not transport._retained_log_overlap_matches(leader, transferee):
+        raise RuntimeError("leadership transfer retry requires matching retained logs")
 
     transport.sim._record(
         "raft-timeout-now-retry",
