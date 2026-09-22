@@ -1,8 +1,8 @@
 import pytest
 
 from distlab.paxos import (
-    AcceptRequest,
     AcceptedValue,
+    AcceptRequest,
     PaxosCluster,
     PaxosSafetyHarness,
     Prepare,
