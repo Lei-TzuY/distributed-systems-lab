@@ -302,7 +302,7 @@ class SnapshotTransport:
                 )
                 return
         if response.term > leader.current_term:
-            leader._advance_term(response.term)
+            leader._advance_term(response.term, rearm_if_leader=True)
         self.sim._record(
             "raft-install-snapshot-response",
             leader=response.leader_id,
