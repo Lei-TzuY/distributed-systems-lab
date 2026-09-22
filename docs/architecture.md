@@ -110,8 +110,10 @@ recorded as incomplete evidence rather than misclassified as a safety failure.
 
 This does not alter the original Raft replay/artifact compatibility boundary and does
 not claim Multi-Paxos. Autonomous runtime scheduling, higher-level operation
-orchestration, Multi-decree/Multi-Paxos work, and real-network deployment remain
-separate future projects.
+orchestration, The next Phase 3 layer adds slot-indexed multi-decree Paxos with per-slot durable
+acceptor state, independent chosen-value evidence, and gap-sensitive ordered learned
+prefixes. It still does not amortize Phase 1 across slots, so stable-leader Multi-Paxos
+remains a separate future project alongside real-network deployment.
 
 See `paxos.md` for the Phase 3 Paxos safety boundary.
 
