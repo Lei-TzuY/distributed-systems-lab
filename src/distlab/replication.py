@@ -23,6 +23,15 @@ class PeerReplicationProgress:
     match_index: int
 
 
+@dataclass(frozen=True, slots=True)
+class PeerActivityProbe:
+    peer: str
+    term: int
+    trace_start: int
+    prev_log_index: int
+    response_ordinal_floor: int
+
+
 class LeaderReplicator:
     """Deterministically drive leader replication and commit propagation."""
 
@@ -61,20 +70,19 @@ class LeaderReplicator:
         self._require_peer(peer)
         return self._progress[peer]
 
-    def probe_activity(self, peer: str) -> bool:
-        """Confirm a same-term peer response without changing replication progress.
-
-        CheckQuorum cares about voter activity, not whether the follower already
-        matches the leader's log tail. An AppendEntries rejection therefore still
-        proves same-term liveness and counts as an acknowledgement.
-        """
+    def begin_activity_probe(self, peer: str) -> PeerActivityProbe:
+        """Send one correlated same-term heartbeat probe without running the simulator."""
         self._require_peer(peer)
         self._require_current_leader()
 
-        log = self.leader.log_view
-        prev_log_index = log.last_index
-        response_ordinal_floor = self._append_response_ordinal_floor(peer)
-        trace_start = len(self.sim.trace)
+        prev_log_index = self.leader.log_view.last_index
+        probe = PeerActivityProbe(
+            peer=peer,
+            term=self._term,
+            trace_start=len(self.sim.trace),
+            prev_log_index=prev_log_index,
+            response_ordinal_floor=self._append_response_ordinal_floor(peer),
+        )
         self.sim._record(
             "raft-quorum-probe",
             leader=self.leader.node_id,
@@ -82,7 +90,7 @@ class LeaderReplicator:
             term=self._term,
             prev_log_index=prev_log_index,
             leader_commit=self._commit_index,
-            response_ordinal_floor=response_ordinal_floor,
+            response_ordinal_floor=probe.response_ordinal_floor,
         )
         self.leader.send_append_entries(
             peer,
@@ -90,23 +98,29 @@ class LeaderReplicator:
             entries=(),
             leader_commit=self._commit_index,
         )
-        self.sim.run()
+        return probe
+
+    def finish_activity_probe(self, probe: PeerActivityProbe) -> bool:
+        """Resolve one previously sent activity probe from trace evidence."""
+        self._require_peer(probe.peer)
         self._require_current_leader()
+        if probe.term != self._term:
+            raise ReplicationError("activity probe term is stale")
 
         response = self._matching_response(
-            peer,
-            trace_start,
+            probe.peer,
+            probe.trace_start,
             kind="raft-append-response",
-            expected_match_index=prev_log_index,
-            expected_prev_log_index=prev_log_index,
+            expected_match_index=probe.prev_log_index,
+            expected_prev_log_index=probe.prev_log_index,
             expected_entry_count=0,
-            response_ordinal_floor=response_ordinal_floor,
+            response_ordinal_floor=probe.response_ordinal_floor,
         )
         if response is None:
             self.sim._record(
                 "raft-quorum-probe-missing",
                 leader=self.leader.node_id,
-                follower=peer,
+                follower=probe.peer,
                 term=self._term,
             )
             return False
@@ -114,12 +128,18 @@ class LeaderReplicator:
         self.sim._record(
             "raft-quorum-probe-ack",
             leader=self.leader.node_id,
-            follower=peer,
+            follower=probe.peer,
             term=self._term,
             append_success=bool(response.details["success"]),
             match_index=int(response.details["match_index"]),
         )
         return True
+
+    def probe_activity(self, peer: str) -> bool:
+        """Confirm same-term activity using the legacy drain-to-completion behavior."""
+        probe = self.begin_activity_probe(peer)
+        self.sim.run()
+        return self.finish_activity_probe(probe)
 
     def replicate(self, peer: str, *, max_attempts: int | None = None) -> bool:
         self._require_peer(peer)
