@@ -1,7 +1,7 @@
 import pytest
 
-from distlab.leadership_transfer import LeadershipTransfer
 from distlab.membership import MembershipChangeError, ReconfigurableRaftCluster
+from distlab.leadership_transfer import LeadershipTransfer
 from distlab.membership_log import ReplicatedMembershipTransition
 from distlab.membership_replication import MembershipAwareLeaderReplicator
 from distlab.raft import RaftRole
@@ -144,7 +144,8 @@ def test_new_leader_recovers_uncommitted_joint_and_commits_through_new_term_barr
     RaftSafetyHarness(cluster).checkpoint()
 
 
-def test_new_leader_recovers_uncommitted_finalize_but_outgoing_only_leader_cannot_commit_it() -> None:
+def test_new_leader_recovers_uncommitted_finalize_but_outgoing_only_leader_cannot_commit_it(
+) -> None:
     sim, cluster = _cluster()
     leader = cluster.node("n1")
     transition = ReplicatedMembershipTransition(leader)
