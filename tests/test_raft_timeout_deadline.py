@@ -36,12 +36,18 @@ def test_current_generation_timeout_cannot_fire_before_scheduled_deadline() -> N
     }
     RaftSafetyHarness(cluster).checkpoint()
 
-    # The actual simulator-owned deadline remains authoritative and can still
-    # start the election at the configured logical time.
+    # The actual simulator-owned deadline remains authoritative and starts the
+    # pre-vote gate at the configured logical time without mutating durable term.
     sim.run(max_events=1)
 
     assert sim.time == 10
-    assert node.current_term == 1
-    assert node.voted_for == "n1"
-    assert node.role is RaftRole.CANDIDATE
+    assert node.current_term == 0
+    assert node.voted_for is None
+    assert node.role is RaftRole.FOLLOWER
+    starts = [
+        record
+        for record in sim.trace
+        if record.kind == "raft-pre-vote-start" and record.details["node"] == "n1"
+    ]
+    assert starts[-1].details["prospective_term"] == 1
     RaftSafetyHarness(cluster).checkpoint()
