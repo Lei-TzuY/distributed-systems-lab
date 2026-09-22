@@ -17,7 +17,7 @@ from distlab.linearizable_read import ReadQuorumUnavailable
 from distlab.membership import ReconfigurableRaftCluster
 from distlab.membership_log import ReplicatedMembershipTransition
 from distlab.membership_replication import MembershipAwareLeaderReplicator
-from distlab.raft import RaftCluster, RaftRole
+from distlab.raft import AppendEntries, RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
 
@@ -484,10 +484,22 @@ def test_service_write_cannot_bypass_pending_joint_new_voter_majority() -> None:
     assert cluster.voting_configuration.new_voters is None
     assert clients.pending_write("blocked-write") is not None
     assert clients.history.completed() == ()
-    assert any(
-        record.kind == "raft-append-entries"
-        and record.details["follower"] in {"n4", "n5"}
+    proposed_sends = [
+        record
         for record in sim.trace
-    )
+        if record.kind == "send"
+        and record.details["src"] == "n1"
+        and record.details["dst"] in {"n4", "n5"}
+        and isinstance(record.details["payload"], AppendEntries)
+    ]
+    assert {record.details["dst"] for record in proposed_sends} == {"n4", "n5"}
+    proposed_discards = [
+        record
+        for record in sim.trace
+        if record.kind == "discard-crashed"
+        and record.details["dst"] in {"n4", "n5"}
+        and isinstance(record.details["payload"], AppendEntries)
+    ]
+    assert {record.details["dst"] for record in proposed_discards} == {"n4", "n5"}
     assert not [record for record in sim.trace if record.kind == "kv-control-noop"]
     RaftSafetyHarness(cluster).checkpoint()
