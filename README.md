@@ -33,7 +33,7 @@ This is a correctness laboratory, not a production distributed database. The ori
 
 Integrated Phase 2 capabilities include snapshot/install-snapshot and compaction, membership changes with joint consensus, leadership transfer, pre-vote, CheckQuorum, bounded heartbeat control, per-node leader runtime generations, and generation-fenced KV authority. The deterministic campaign path now validates leader-generation authority without changing its replayable message schedule.
 
-Phase 3 now includes a crash-recoverable single-decree Paxos vertical slice over the deterministic simulator, with durable acceptor state and an independent chosen-value safety harness. Multi-Paxos, real-network deployment, and production storage/networking remain future architectural phases rather than filler follow-ons.
+Phase 3 now includes crash-recoverable single-decree Paxos plus seeded proposal/fault/lifecycle campaigns with exact-replay trial artifacts, durable acceptor state, and an independent chosen-value safety harness. Multi-decree/Multi-Paxos, real-network deployment, and production storage/networking remain future architectural phases rather than filler follow-ons.
 
 See [`docs/architecture.md`](docs/architecture.md) for invariants and [`docs/stability-checkpoint.md`](docs/stability-checkpoint.md) for the compatibility boundary.
 
