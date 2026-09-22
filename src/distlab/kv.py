@@ -184,6 +184,16 @@ class ReplicatedKV:
         emit_trace: bool,
         index: int | None = None,
     ) -> None:
+        if self._is_membership_control_command(command):
+            if emit_trace:
+                self.sim._record(
+                    "kv-control-noop",
+                    node=node_id,
+                    index=index,
+                    command=type(command).__name__,
+                )
+            return
+
         client_id: str | None = None
         request_id: int | None = None
         duplicate = False
@@ -265,6 +275,8 @@ class ReplicatedKV:
             if isinstance(command, ClientRequest):
                 if not isinstance(command.operation, (Put, Delete)):
                     raise InvalidKVCommand(f"unsupported KV command {command.operation!r}")
+            elif ReplicatedKV._is_membership_control_command(command):
+                continue
             elif not isinstance(command, (Put, Delete, CommitRecoveryBarrier)):
                 raise InvalidKVCommand(f"unsupported KV command {command!r}")
 
@@ -282,6 +294,12 @@ class ReplicatedKV:
                     f"client={command.client_id!r}, request_id={command.request_id}"
                 )
             seen.setdefault(identity, command.operation)
+
+    @staticmethod
+    def _is_membership_control_command(command: object) -> bool:
+        from .membership_log import JointConsensusCommand, StableConsensusCommand
+
+        return isinstance(command, (JointConsensusCommand, StableConsensusCommand))
 
     def _require_node(self, node_id: str) -> None:
         if node_id not in self._state:

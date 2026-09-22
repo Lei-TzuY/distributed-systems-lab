@@ -76,3 +76,29 @@ of client program order and request sequencing.
 
 This keeps session sequencing and Raft authority as separate responsibilities
 while providing one executable path that composes both layers.
+
+## Membership-transition data-plane integration
+
+Client traffic and membership changes share one Raft log. Reconfigurable leader
+service fanout therefore targets all pre-provisioned transport peers, including
+learners, while `MembershipAwareLeaderReplicator` remains the only source of
+commit authority.
+
+This distinction is required when a client entry follows an uncommitted joint
+membership proposal: proposed new voters must receive that prefix before they
+can contribute the new-configuration majority required to commit it. Merely
+fanning out to the currently live stable voters would deadlock the transition
+behind otherwise healthy learners.
+
+Committed membership commands remain part of the durable applied Raft prefix and
+therefore still participate in State Machine Safety and snapshot boundaries. For
+the KV projection specifically, `JointConsensusCommand` and
+`StableConsensusCommand` are deterministic no-ops: they alter voting authority,
+not key/value or client-deduplication state.
+
+Thus transport fanout, commit quorum, and KV projection remain separate concerns:
+
+- fanout may include learners;
+- commit requires the exact stable/joint voter quorum for the candidate prefix;
+- membership commands are durably applied control-plane entries;
+- KV state changes only for KV commands and commit-recovery barriers remain no-ops.

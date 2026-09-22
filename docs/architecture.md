@@ -87,6 +87,7 @@ The original deterministic correctness chain remains the replay/artifact compati
 5. generation-fenced client KV reads/writes
 6. generation validation in deterministic scenario writes without changing their network-event schedule
 7. commit-synchronous membership authority and generation-fenced transition recovery across leader handoff
+8. membership-transition-aware client replication and KV projection across the shared Raft log
 
 `LeaderGenerationGuard` is the shared authority primitive for client-facing service and scenario execution. It reads Raft's node-local active generation state and never schedules heartbeat/runtime work itself, keeping data-plane fencing separate from control-plane tick ownership.
 

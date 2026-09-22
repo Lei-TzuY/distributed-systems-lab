@@ -422,9 +422,11 @@ class LeaderKVService:
         return LeaderReplicator(leader)
 
     def _replication_peers(self, leader: RaftNode) -> tuple[str, ...]:
-        if isinstance(self.cluster, ReconfigurableRaftCluster):
-            voters = self.cluster.voting_configuration.voters
-            return tuple(sorted(voters - {leader.node_id}))
+        # Membership-aware commit rules, not fanout, decide authority.
+        # In reconfigurable clusters, pre-provisioned learners must be able to
+        # receive a pending joint proposal (and later entries) before that
+        # proposal becomes live. Standard clusters already treat every peer as
+        # a voter, so the same transport fanout is correct there too.
         return tuple(sorted(leader.peers))
 
     def _append_command(self, leader: RaftNode, command: object, *, trace_kind: str) -> int:

@@ -15,7 +15,9 @@ from distlab.leadership_transfer import LeadershipTransfer
 from distlab.linearizability import SingleKeyKVLinearizabilityChecker
 from distlab.linearizable_read import ReadQuorumUnavailable
 from distlab.membership import ReconfigurableRaftCluster
-from distlab.raft import RaftCluster, RaftRole
+from distlab.membership_log import ReplicatedMembershipTransition
+from distlab.membership_replication import MembershipAwareLeaderReplicator
+from distlab.raft import AppendEntries, RaftCluster, RaftRole
 from distlab.raft_invariants import RaftSafetyHarness
 from distlab.simulator import Simulator
 
@@ -379,4 +381,125 @@ def test_joint_consensus_linearizable_read_requires_new_voter_majority() -> None
     assert not [
         item for item in clients.history.completed() if item.operation_id == "joint-read"
     ]
+    RaftSafetyHarness(cluster).checkpoint()
+
+
+def test_service_write_commits_through_pending_joint_membership_prefix() -> None:
+    sim = Simulator()
+    cluster = ReconfigurableRaftCluster(
+        sim,
+        ("n1", "n2", "n3", "n4", "n5"),
+        voters=("n1", "n2", "n3"),
+    )
+    supervisor = LeaderRuntimeSupervisor(
+        cluster,
+        heartbeat_interval=3,
+        response_timeout=2,
+    )
+    cluster.node("n1").start_election()
+    sim.run()
+    leader = cluster.node("n1")
+    identity = supervisor.runtime_identity("n1")
+    kv = ReplicatedKV(cluster)
+    clients = KVClientHistory(kv)
+    service = LeaderKVService(supervisor, kv, clients)
+    transition = ReplicatedMembershipTransition(leader)
+    membership_index = transition.propose_joint(("n1", "n4", "n5"))
+
+    result = service.write(
+        "n1",
+        identity.generation,
+        operation_id="write-after-joint",
+        client_id="client-a",
+        request_id=1,
+        operation=Put("x", "one"),
+        max_attempts_per_peer=3,
+    )
+
+    assert membership_index == 1
+    assert result.log_index == 2
+    assert result.commit_index == 2
+    assert leader.commit_index == 2
+    assert cluster.voting_configuration.old_voters == frozenset({"n1", "n2", "n3"})
+    assert cluster.voting_configuration.new_voters == frozenset({"n1", "n4", "n5"})
+    assert kv.get("n1", "x") == "one"
+    assert clients.pending_write("write-after-joint") is None
+    assert [item.operation_id for item in clients.history.completed()] == [
+        "write-after-joint"
+    ]
+    assert any(
+        record.kind == "raft-append-entries"
+        and record.details["follower"] == "n4"
+        for record in sim.trace
+    )
+    noops = [record for record in sim.trace if record.kind == "kv-control-noop"]
+    assert noops[-1].details["command"] == "JointConsensusCommand"
+    assert noops[-1].details["index"] == membership_index
+
+    observer = MembershipAwareLeaderReplicator(leader)
+    assert transition.activate_if_committed(observer) is True
+    assert transition.pending_index is None
+    kv.applier.assert_state_machine_safety()
+    RaftSafetyHarness(cluster).checkpoint()
+
+
+def test_service_write_cannot_bypass_pending_joint_new_voter_majority() -> None:
+    sim = Simulator()
+    cluster = ReconfigurableRaftCluster(
+        sim,
+        ("n1", "n2", "n3", "n4", "n5"),
+        voters=("n1", "n2", "n3"),
+    )
+    supervisor = LeaderRuntimeSupervisor(
+        cluster,
+        heartbeat_interval=3,
+        response_timeout=2,
+    )
+    cluster.node("n1").start_election()
+    sim.run()
+    leader = cluster.node("n1")
+    identity = supervisor.runtime_identity("n1")
+    kv = ReplicatedKV(cluster)
+    clients = KVClientHistory(kv)
+    service = LeaderKVService(supervisor, kv, clients)
+    transition = ReplicatedMembershipTransition(leader)
+    membership_index = transition.propose_joint(("n1", "n4", "n5"))
+    sim.crash("n4")
+    sim.crash("n5")
+
+    with pytest.raises(LeaderWriteQuorumUnavailable):
+        service.write(
+            "n1",
+            identity.generation,
+            operation_id="blocked-write",
+            client_id="client-a",
+            request_id=1,
+            operation=Put("x", "blocked"),
+            max_attempts_per_peer=2,
+        )
+
+    assert membership_index == 1
+    assert leader.commit_index == 0
+    assert cluster.voting_configuration.old_voters == frozenset({"n1", "n2", "n3"})
+    assert cluster.voting_configuration.new_voters is None
+    assert clients.pending_write("blocked-write") is not None
+    assert clients.history.completed() == ()
+    proposed_sends = [
+        record
+        for record in sim.trace
+        if record.kind == "send"
+        and record.details["src"] == "n1"
+        and record.details["dst"] in {"n4", "n5"}
+        and isinstance(record.details["payload"], AppendEntries)
+    ]
+    assert {record.details["dst"] for record in proposed_sends} == {"n4", "n5"}
+    proposed_discards = [
+        record
+        for record in sim.trace
+        if record.kind == "discard-crashed"
+        and record.details["dst"] in {"n4", "n5"}
+        and isinstance(record.details["payload"], AppendEntries)
+    ]
+    assert {record.details["dst"] for record in proposed_discards} == {"n4", "n5"}
+    assert not [record for record in sim.trace if record.kind == "kv-control-noop"]
     RaftSafetyHarness(cluster).checkpoint()

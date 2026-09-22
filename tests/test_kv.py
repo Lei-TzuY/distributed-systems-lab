@@ -1,6 +1,8 @@
 import pytest
 
 from distlab.kv import Delete, InvalidKVCommand, Put, ReplicatedKV
+from distlab.membership import ReconfigurableRaftCluster
+from distlab.membership_log import JointConsensusCommand, StableConsensusCommand
 from distlab.raft import LogEntry, RaftCluster, RaftRole
 from distlab.replication import LeaderReplicator
 from distlab.simulator import Simulator
@@ -145,3 +147,33 @@ def test_empty_keys_are_rejected() -> None:
         Put("", "value")
     with pytest.raises(ValueError, match="non-empty"):
         Delete("")
+
+
+def test_membership_commands_are_durable_kv_projection_noops() -> None:
+    sim = Simulator()
+    log = (
+        LogEntry(term=1, command=Put("x", "one")),
+        LogEntry(
+            term=1,
+            command=JointConsensusCommand(("n1", "n2", "n3")),
+        ),
+        LogEntry(term=1, command=StableConsensusCommand(("n1", "n2", "n3"))),
+        LogEntry(term=1, command=Put("y", "two")),
+    )
+    sim.persistent_state["n1"]["log"] = log
+    cluster = ReconfigurableRaftCluster(sim, ("n1", "n2", "n3"))
+    cluster.node("n1").advance_commit_index(len(log), source="test")
+    kv = ReplicatedKV(cluster)
+
+    applied = kv.apply_committed("n1")
+
+    assert len(applied) == len(log)
+    assert kv.snapshot("n1") == {"x": "one", "y": "two"}
+    assert kv.client_requests("n1") == {}
+    noops = [record for record in sim.trace if record.kind == "kv-control-noop"]
+    assert [record.details["command"] for record in noops] == [
+        "JointConsensusCommand",
+        "StableConsensusCommand",
+    ]
+    assert [record.details["index"] for record in noops] == [2, 3]
+    kv.applier.assert_state_machine_safety()
