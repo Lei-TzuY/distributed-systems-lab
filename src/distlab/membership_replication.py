@@ -105,27 +105,43 @@ class MembershipAwareLeaderReplicator(LeaderReplicator):
             raise MembershipChangeError(
                 "stable membership proposal does not match active joint new-voter set"
             )
+        if self.leader.node_id not in voters:
+            raise MembershipChangeError(
+                "current leader must belong to the new voter configuration"
+            )
         return active, "joint-finalize"
 
     def _persist_committed_membership(self, commit_index: int) -> None:
-        """Durably record any membership command covered by this commit advance.
+        """Persist and immediately install newly committed membership commands.
 
-        Commit advancement and live configuration activation are intentionally
-        separate operations. Persisting the watermark here closes the crash window
-        between objective quorum commit and the transition controller observing it.
+        A committed membership entry is already authoritative Raft state. Keeping
+        the durable watermark ahead of the live quorum configuration would allow a
+        leadership change or election to observe stale membership until an external
+        transition controller runs. Commit advancement therefore installs the same
+        configuration synchronously after validating its quorum.
         """
 
         from .membership_log import (
             JointConsensusCommand,
             StableConsensusCommand,
+            _durable_membership_commit_index,
+            _install_committed_membership,
             _persist_membership_commit_watermark,
         )
 
         cluster = self.leader.cluster
         assert isinstance(cluster, ReconfigurableRaftCluster)
         log = self.leader.log_view
-        for index in range(max(1, log.first_retained_index), commit_index + 1):
+        durable_boundary = _durable_membership_commit_index(cluster)
+        start = max(durable_boundary + 1, log.first_retained_index)
+        for index in range(start, commit_index + 1):
             command = log.entry_at(index).command
             if not isinstance(command, (JointConsensusCommand, StableConsensusCommand)):
                 continue
             _persist_membership_commit_watermark(cluster, index=index, command=command)
+            _install_committed_membership(
+                cluster,
+                leader_id=self.leader.node_id,
+                index=index,
+                command=command,
+            )
