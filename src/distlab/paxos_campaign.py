@@ -541,6 +541,11 @@ class SeededPaxosCampaign:
     def __post_init__(self) -> None:
         if self.proposal_generator.node_ids != self.node_ids:
             raise ValueError("proposal generator node_ids must match campaign node_ids")
+        if (
+            self.lifecycle_generator is not None
+            and tuple(sorted(self.lifecycle_generator.nodes)) != tuple(sorted(self.node_ids))
+        ):
+            raise ValueError("lifecycle generator nodes must match campaign node_ids")
         if not isinstance(self.proposal_count, int) or isinstance(self.proposal_count, bool):
             raise ValueError("proposal_count must be an integer")
         if self.proposal_count <= 0:
