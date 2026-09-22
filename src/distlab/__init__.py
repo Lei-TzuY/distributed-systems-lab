@@ -9,8 +9,8 @@ from .fault_schedule_minimizer import (
     FaultScheduleMinimizationResult,
     NonLinearizableFaultScheduleMinimizer,
 )
-from .history_minimizer import HistoryMinimizationResult, NonLinearizableHistoryMinimizer
 from .heartbeat import HeartbeatRound, LeaderHeartbeatController
+from .history_minimizer import HistoryMinimizationResult, NonLinearizableHistoryMinimizer
 from .kv import (
     ClientRequest,
     ClientRequestConflict,
@@ -129,8 +129,8 @@ __all__ = [
     "FaultRule",
     "FaultScheduleMinimizationResult",
     "Get",
-    "HistoryMinimizationResult",
     "HeartbeatRound",
+    "HistoryMinimizationResult",
     "InvalidHistory",
     "InvalidKVCommand",
     "Invocation",
