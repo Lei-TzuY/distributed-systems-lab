@@ -136,6 +136,7 @@ class _ScheduledDelivery:
 
 
 Handler = Callable[["Simulator", Message], None]
+CrashHandler = Callable[["Simulator"], None]
 RestartHandler = Callable[["Simulator"], None]
 
 
@@ -153,6 +154,7 @@ class Simulator:
         self._sequence = 0
         self._queue: list[_ScheduledDelivery] = []
         self._handlers: dict[str, Handler] = {}
+        self._crash_handlers: dict[str, CrashHandler] = {}
         self._restart_handlers: dict[str, RestartHandler] = {}
         self._alive: dict[str, bool] = defaultdict(lambda: True)
         self._send_ordinals: dict[tuple[str, str], int] = defaultdict(int)
@@ -168,11 +170,14 @@ class Simulator:
         node: str,
         handler: Handler,
         *,
+        crash_handler: CrashHandler | None = None,
         restart_handler: RestartHandler | None = None,
     ) -> None:
         if node in self._handlers:
             raise ValueError(f"handler already registered for node {node!r}")
         self._handlers[node] = handler
+        if crash_handler is not None:
+            self._crash_handlers[node] = crash_handler
         if restart_handler is not None:
             self._restart_handlers[node] = restart_handler
         self._alive[node] = True
@@ -263,8 +268,11 @@ class Simulator:
     def crash(self, node: str) -> None:
         self._validate_node(node, operation="crash")
         self._alive[node] = False
-        self.volatile_state[node].clear()
         self._record("crash", node=node)
+        crash_handler = self._crash_handlers.get(node)
+        if crash_handler is not None:
+            crash_handler(self)
+        self.volatile_state[node].clear()
 
     def restart(self, node: str) -> None:
         self._validate_node(node, operation="restart")
