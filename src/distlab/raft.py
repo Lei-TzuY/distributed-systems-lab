@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Callable
 
 from .simulator import Message, Simulator
 
@@ -11,6 +11,23 @@ class RaftRole(StrEnum):
     FOLLOWER = "follower"
     CANDIDATE = "candidate"
     LEADER = "leader"
+
+
+class LeadershipLifecycleKind(StrEnum):
+    ACQUIRED = "acquired"
+    RETIRED = "retired"
+
+
+@dataclass(frozen=True, slots=True)
+class LeadershipLifecycleEvent:
+    kind: LeadershipLifecycleKind
+    generation: int
+    node_id: str
+    term: int
+    reason: str
+
+
+LeadershipObserver = Callable[[LeadershipLifecycleEvent], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +168,7 @@ class RaftCluster:
         self.sim = sim
         self.node_ids = node_ids
         self._leaders_by_term: dict[int, str] = {}
+        self._init_leadership_lifecycle()
         self.nodes = {
             node_id: RaftNode(
                 cluster=self,
@@ -166,6 +184,7 @@ class RaftCluster:
             sim.register(
                 node_id,
                 node.handle_message,
+                crash_handler=node.handle_crash,
                 restart_handler=node.handle_restart,
             )
         for node in self.nodes.values():
@@ -173,6 +192,95 @@ class RaftCluster:
 
     def node(self, node_id: str) -> RaftNode:
         return self.nodes[node_id]
+
+    def _init_leadership_lifecycle(self) -> None:
+        self._leadership_generation = 0
+        self._active_leader_generations: dict[str, tuple[int, int]] = {}
+        self._leadership_observers: list[LeadershipObserver] = []
+
+    def register_leadership_observer(
+        self,
+        observer: LeadershipObserver,
+        *,
+        replay_active: bool = True,
+    ) -> None:
+        if observer in self._leadership_observers:
+            raise ValueError("leadership observer already registered")
+        self._leadership_observers.append(observer)
+        if not replay_active:
+            return
+        for node_id, (term, generation) in sorted(
+            self._active_leader_generations.items(),
+            key=lambda item: item[1][1],
+        ):
+            observer(
+                LeadershipLifecycleEvent(
+                    kind=LeadershipLifecycleKind.ACQUIRED,
+                    generation=generation,
+                    node_id=node_id,
+                    term=term,
+                    reason="observer-replay",
+                )
+            )
+
+    @property
+    def active_leader_generations(self) -> dict[str, tuple[int, int]]:
+        return dict(self._active_leader_generations)
+
+    def _notify_leader_acquired(self, node_id: str, term: int, *, reason: str) -> int:
+        existing = self._active_leader_generations.get(node_id)
+        if existing is not None and existing[0] == term:
+            return existing[1]
+        if existing is not None:
+            self._notify_leader_retired(
+                node_id,
+                existing[0],
+                reason="leader-generation-superseded",
+            )
+
+        self._leadership_generation += 1
+        generation = self._leadership_generation
+        self._active_leader_generations[node_id] = (term, generation)
+        event = LeadershipLifecycleEvent(
+            kind=LeadershipLifecycleKind.ACQUIRED,
+            generation=generation,
+            node_id=node_id,
+            term=term,
+            reason=reason,
+        )
+        self.sim._record(
+            "raft-leader-runtime-acquired",
+            node=node_id,
+            term=term,
+            generation=generation,
+            reason=reason,
+        )
+        for observer in tuple(self._leadership_observers):
+            observer(event)
+        return generation
+
+    def _notify_leader_retired(self, node_id: str, term: int, *, reason: str) -> bool:
+        existing = self._active_leader_generations.get(node_id)
+        if existing is None or existing[0] != term:
+            return False
+        _, generation = self._active_leader_generations.pop(node_id)
+        event = LeadershipLifecycleEvent(
+            kind=LeadershipLifecycleKind.RETIRED,
+            generation=generation,
+            node_id=node_id,
+            term=term,
+            reason=reason,
+        )
+        self.sim._record(
+            "raft-leader-runtime-retired",
+            node=node_id,
+            term=term,
+            generation=generation,
+            reason=reason,
+        )
+        for observer in tuple(self._leadership_observers):
+            observer(event)
+        return True
 
     def record_leader(self, term: int, node_id: str) -> None:
         existing = self._leaders_by_term.get(term)
@@ -344,6 +452,17 @@ class RaftNode:
             timeout,
         )
 
+    def handle_crash(self, sim: Simulator) -> None:
+        """Retire node-local leader runtime before crash clears volatile state."""
+        if sim is not self.sim:
+            raise ValueError("crash callback invoked by a different simulator")
+        if self.role is RaftRole.LEADER:
+            self.cluster._notify_leader_retired(
+                self.node_id,
+                self.current_term,
+                reason="node-crash",
+            )
+
     def handle_restart(self, sim: Simulator) -> None:
         """Reconstruct Raft volatile state at the simulator restart boundary."""
         if sim is not self.sim:
@@ -436,10 +555,16 @@ class RaftNode:
         if self.role is not RaftRole.LEADER:
             return False
 
+        term = self.current_term
         volatile = self.sim.volatile_state[self.node_id]
         volatile["role"] = RaftRole.FOLLOWER.value
         volatile["votes_received"] = set()
         self._clear_pre_vote()
+        self.cluster._notify_leader_retired(
+            self.node_id,
+            term,
+            reason=reason,
+        )
         self.sim._record(
             "raft-leader-step-down",
             node=self.node_id,
@@ -749,12 +874,19 @@ class RaftNode:
     def _advance_term(self, term: int, *, rearm_if_leader: bool = False) -> None:
         if term <= self.current_term:
             return
+        previous_term = self.current_term
         was_leader = self.role is RaftRole.LEADER
         self._persist_term_and_vote(term=term, voted_for=None)
         volatile = self.sim.volatile_state[self.node_id]
         volatile["role"] = RaftRole.FOLLOWER.value
         volatile["votes_received"] = set()
         self._clear_pre_vote()
+        if was_leader:
+            self.cluster._notify_leader_retired(
+                self.node_id,
+                previous_term,
+                reason="higher-term-observed",
+            )
         self.sim._record("raft-term-advance", node=self.node_id, term=term)
         if rearm_if_leader and was_leader:
             self.reset_election_timeout(reason="term-advance")
@@ -786,6 +918,11 @@ class RaftNode:
         self._election_timer_generation += 1
         self._election_timer_deadline = None
         self.sim._record("raft-leader", node=self.node_id, term=term)
+        self.cluster._notify_leader_acquired(
+            self.node_id,
+            term,
+            reason="election-won",
+        )
 
     def _clear_pre_vote(self) -> None:
         volatile = self.sim.volatile_state[self.node_id]
