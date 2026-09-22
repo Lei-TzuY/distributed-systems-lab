@@ -53,3 +53,26 @@ The service consumes only the public `LeaderRuntimeSupervisor.runtime_identity`
 surface. It does not schedule heartbeat ticks or mutate runtime ownership, so
 leader control-plane scheduling and client data-plane fencing remain separate
 architectural responsibilities.
+
+## Client-session orchestration
+
+`KVClientSession` can now execute writes, exact retries, linearizable reads,
+read retries, and recovery through `LeaderKVService` while retaining ownership
+of client program order and request sequencing.
+
+- the session checks single-flight and monotonic request-id rules before service
+  execution;
+- the service owns leader-generation, quorum, commit, application, and read
+  barrier authority;
+- failed writes remain session-pending only when the shared client history
+  contains the matching unresolved request;
+- successful service writes advance the session floor without emitting a
+  duplicate client response;
+- failed reads preserve the existing pending/abandonment model and can be
+  retried against a later valid generation;
+- generation-fenced recovery first confirms leader authority and quorum, then
+  reconstructs the request-id floor and unresolved operation from durable
+  leader state.
+
+This keeps session sequencing and Raft authority as separate responsibilities
+while providing one executable path that composes both layers.
