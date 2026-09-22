@@ -11,6 +11,8 @@ def test_schedule_generation_and_reduction_are_public() -> None:
         "NonLinearizableClientWorkloadMinimizer",
         "NonLinearizableLifecycleScheduleMinimizer",
         "PaxosCluster",
+        "PaxosLogCluster",
+        "PaxosLogSafetyHarness",
         "PaxosSafetyHarness",
         "PaxosScenarioRunner",
         "PaxosTrialArtifact",
