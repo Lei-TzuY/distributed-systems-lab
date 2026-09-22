@@ -28,6 +28,14 @@ from .lifecycle_minimizer import (
     LifecycleScheduleMinimizationResult,
     NonLinearizableLifecycleScheduleMinimizer,
 )
+from .leader_liveness import (
+    LeaderAuthorityLost,
+    LeaderLivenessError,
+    LeaderQuorumEvidence,
+    LeaderQuorumMembershipChanged,
+    LeaderQuorumMonitor,
+    LeaderQuorumUnavailable,
+)
 from .linearizability import (
     CompletedOperation,
     Completion,
@@ -128,6 +136,12 @@ __all__ = [
     "KVSnapshot",
     "KVSnapshotStore",
     "LeaderAppendOnlyChecker",
+    "LeaderAuthorityLost",
+    "LeaderLivenessError",
+    "LeaderQuorumEvidence",
+    "LeaderQuorumMembershipChanged",
+    "LeaderQuorumMonitor",
+    "LeaderQuorumUnavailable",
     "LeaderAppendOnlyViolation",
     "LeaderCompletenessChecker",
     "LeaderCompletenessViolation",
