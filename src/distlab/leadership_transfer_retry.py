@@ -39,19 +39,28 @@ def retry_timeout_now(transport: LeadershipTransferTransport, attempt_id: int) -
 
     leader = transport.cluster.node(leader_id)
     if not transport.sim.is_alive(leader_id):
-        reject("source-leader-crashed", "leadership transfer retry requires a live source leader")
+        reject(
+            "source-leader-crashed",
+            "leadership transfer retry requires a live source leader",
+        )
     if leader.role is not RaftRole.LEADER or leader.current_term != term:
         reject(
             "source-no-longer-current-leader",
             "leadership transfer retry requires original leader authority",
         )
-    if transport._attempt_configurations.get(attempt_id) is not transport._configuration_identity():
+    if (
+        transport._attempt_configurations.get(attempt_id)
+        is not transport._configuration_identity()
+    ):
         reject(
             "membership-configuration-changed",
             "leadership transfer retry requires unchanged voting configuration",
         )
     if not transport.sim.is_alive(transferee_id):
-        reject("transferee-crashed", "leadership transfer retry requires a live transferee")
+        reject(
+            "transferee-crashed",
+            "leadership transfer retry requires a live transferee",
+        )
 
     transferee = transport.cluster.node(transferee_id)
     if (
