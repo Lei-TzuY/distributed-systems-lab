@@ -8,6 +8,7 @@ from .kv import ClientRequest, Delete, Put
 from .linearizability import Get
 
 if TYPE_CHECKING:
+    from .leader_service import LeaderKVService, LeaderReadResult, LeaderWriteResult
     from .linearizable_read import LinearizableKVReader
 
 
@@ -132,27 +133,43 @@ class KVClientSession:
         )
         return session
 
+    @classmethod
+    def recover_generation_fenced(
+        cls,
+        service: LeaderKVService,
+        client_id: str,
+        leader_id: str,
+        expected_generation: int,
+        *,
+        max_attempts_per_peer: int = 8,
+    ) -> KVClientSession:
+        """Recover the session floor through generation-fenced leader authority."""
+
+        evidence = service.linearizable_barrier(
+            leader_id,
+            expected_generation,
+            max_attempts_per_peer=max_attempts_per_peer,
+        )
+        session = cls.recover(service.clients, client_id, evidence.leader)
+        service.sim._record(
+            "client-session-recover-generation-fenced",
+            client_id=client_id,
+            node=evidence.leader,
+            term=evidence.term,
+            generation=expected_generation,
+            commit_index=evidence.commit_index,
+            last_completed_request_id=session.last_completed_request_id,
+            pending_operation=session._pending_operation_id(),
+        )
+        return session
+
     def invoke_write(
         self,
         operation_id: str,
         request_id: int,
         operation: Put | Delete,
     ) -> ClientRequest:
-        if self._pending is not None:
-            raise SessionWritePending(
-                f"client {self.client_id!r} already has pending write "
-                f"{self._pending.operation_id!r}"
-            )
-        if self._pending_read is not None:
-            raise SessionReadPending(
-                f"client {self.client_id!r} cannot write while read "
-                f"{self._pending_read.operation_id!r} is pending"
-            )
-        if request_id <= self.last_completed_request_id:
-            raise StaleClientRequest(
-                f"client {self.client_id!r} request_id {request_id} is not newer than "
-                f"completed request_id {self.last_completed_request_id}"
-            )
+        self._ensure_can_start_write(request_id)
         request = self.clients.invoke_write(
             operation_id,
             self.client_id,
@@ -172,14 +189,72 @@ class KVClientSession:
     def complete_write(self, operation_id: str, node_id: str) -> None:
         pending = self._require_pending(operation_id)
         self.clients.complete_write(operation_id, node_id)
-        self.last_completed_request_id = pending.request.request_id
-        self._pending = None
-        self.clients.sim._record(
-            "client-session-advance",
-            client_id=self.client_id,
-            request_id=self.last_completed_request_id,
-            node=node_id,
+        self._advance_completed_write(pending, node_id)
+
+    def write_via_service(
+        self,
+        service: LeaderKVService,
+        leader_id: str,
+        expected_generation: int,
+        operation_id: str,
+        request_id: int,
+        operation: Put | Delete,
+        *,
+        max_attempts_per_peer: int = 8,
+    ) -> LeaderWriteResult:
+        """Execute one sequenced write through generation-fenced leader authority."""
+
+        self._require_service(service)
+        self._ensure_can_start_write(request_id)
+        expected = ClientRequest(self.client_id, request_id, operation)
+        existing_operation_ids = {
+            item.operation_id for item in self.clients.history.invocations()
+        }
+        self._pending = PendingSessionWrite(operation_id, expected)
+        try:
+            result = service.write(
+                leader_id,
+                expected_generation,
+                operation_id=operation_id,
+                client_id=self.client_id,
+                request_id=request_id,
+                operation=operation,
+                max_attempts_per_peer=max_attempts_per_peer,
+            )
+        except Exception:
+            pending = self.clients.pending_write(operation_id)
+            if (
+                operation_id in existing_operation_ids
+                or pending is None
+                or pending != expected
+            ):
+                self._pending = None
+            raise
+
+        self._accept_service_write_result(operation_id, result)
+        return result
+
+    def retry_write_via_service(
+        self,
+        service: LeaderKVService,
+        leader_id: str,
+        expected_generation: int,
+        operation_id: str,
+        *,
+        max_attempts_per_peer: int = 8,
+    ) -> LeaderWriteResult:
+        """Retry the exact pending session write through a new or current generation."""
+
+        self._require_service(service)
+        self._require_pending(operation_id)
+        result = service.retry_write(
+            leader_id,
+            expected_generation,
+            operation_id=operation_id,
+            max_attempts_per_peer=max_attempts_per_peer,
         )
+        self._accept_service_write_result(operation_id, result)
+        return result
 
     def linearizable_read(
         self,
@@ -199,16 +274,7 @@ class KVClientSession:
         not leave phantom session-local pending state.
         """
 
-        if self._pending is not None:
-            raise SessionWritePending(
-                f"client {self.client_id!r} cannot read while write "
-                f"{self._pending.operation_id!r} is pending"
-            )
-        if self._pending_read is not None:
-            raise SessionReadPending(
-                f"client {self.client_id!r} already has pending read "
-                f"{self._pending_read.operation_id!r}"
-            )
+        self._ensure_can_start_read()
         existing_operation_ids = {
             item.operation_id for item in self.clients.history.invocations()
         }
@@ -236,6 +302,73 @@ class KVClientSession:
         else:
             self._pending_read = None
             return result
+
+    def linearizable_read_via_service(
+        self,
+        service: LeaderKVService,
+        leader_id: str,
+        expected_generation: int,
+        operation_id: str,
+        key: str,
+        *,
+        max_attempts_per_peer: int = 8,
+    ) -> LeaderReadResult:
+        """Execute one program-ordered read through generation-fenced authority."""
+
+        self._require_service(service)
+        self._ensure_can_start_read()
+        existing_operation_ids = {
+            item.operation_id for item in self.clients.history.invocations()
+        }
+        self._pending_read = PendingSessionRead(operation_id, key)
+        try:
+            result = service.linearizable_read(
+                leader_id,
+                expected_generation,
+                operation_id=operation_id,
+                client_id=self.client_id,
+                key=key,
+                max_attempts_per_peer=max_attempts_per_peer,
+            )
+        except Exception:
+            pending = {
+                item.operation_id: item for item in self.clients.history.pending()
+            }.get(operation_id)
+            if (
+                operation_id in existing_operation_ids
+                or pending is None
+                or pending.client_id != self.client_id
+                or pending.operation != Get(key)
+            ):
+                self._pending_read = None
+            raise
+        else:
+            self._pending_read = None
+            return result
+
+    def retry_linearizable_read_via_service(
+        self,
+        service: LeaderKVService,
+        leader_id: str,
+        expected_generation: int,
+        operation_id: str,
+        *,
+        max_attempts_per_peer: int = 8,
+    ) -> LeaderReadResult:
+        """Retry the exact pending session read through generation-fenced authority."""
+
+        self._require_service(service)
+        pending = self._require_pending_read(operation_id)
+        result = service.retry_linearizable_read(
+            leader_id,
+            expected_generation,
+            operation_id=operation_id,
+            client_id=self.client_id,
+            key=pending.key,
+            max_attempts_per_peer=max_attempts_per_peer,
+        )
+        self._pending_read = None
+        return result
 
     def retry_linearizable_read(
         self,
@@ -273,6 +406,67 @@ class KVClientSession:
 
     def pending_read(self) -> PendingSessionRead | None:
         return self._pending_read
+
+    def _ensure_can_start_write(self, request_id: int) -> None:
+        if self._pending is not None:
+            raise SessionWritePending(
+                f"client {self.client_id!r} already has pending write "
+                f"{self._pending.operation_id!r}"
+            )
+        if self._pending_read is not None:
+            raise SessionReadPending(
+                f"client {self.client_id!r} cannot write while read "
+                f"{self._pending_read.operation_id!r} is pending"
+            )
+        if request_id <= self.last_completed_request_id:
+            raise StaleClientRequest(
+                f"client {self.client_id!r} request_id {request_id} is not newer than "
+                f"completed request_id {self.last_completed_request_id}"
+            )
+
+    def _ensure_can_start_read(self) -> None:
+        if self._pending is not None:
+            raise SessionWritePending(
+                f"client {self.client_id!r} cannot read while write "
+                f"{self._pending.operation_id!r} is pending"
+            )
+        if self._pending_read is not None:
+            raise SessionReadPending(
+                f"client {self.client_id!r} already has pending read "
+                f"{self._pending_read.operation_id!r}"
+            )
+
+    def _require_service(self, service: LeaderKVService) -> None:
+        if service.clients is not self.clients:
+            raise ValueError(
+                "leader service and client session must share one client history"
+            )
+
+    def _accept_service_write_result(
+        self,
+        operation_id: str,
+        result: LeaderWriteResult,
+    ) -> None:
+        pending = self._require_pending(operation_id)
+        if result.request != pending.request:
+            raise AssertionError("leader service changed the active request identity")
+        if self.clients.pending_write(operation_id) is not None:
+            raise AssertionError("leader service returned before completing client history")
+        self._advance_completed_write(pending, result.leader_id)
+
+    def _advance_completed_write(
+        self,
+        pending: PendingSessionWrite,
+        node_id: str,
+    ) -> None:
+        self.last_completed_request_id = pending.request.request_id
+        self._pending = None
+        self.clients.sim._record(
+            "client-session-advance",
+            client_id=self.client_id,
+            request_id=self.last_completed_request_id,
+            node=node_id,
+        )
 
     def _restore_pending_operation(
         self,

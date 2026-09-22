@@ -8,7 +8,7 @@ from .kv import ClientRequest, ClientRequestConflict, Delete, Put, ReplicatedKV
 from .leader_authority import LeaderGenerationGuard
 from .leader_runtime import LeaderRuntimeIdentity, LeaderRuntimeSupervisor
 from .linearizability import Get
-from .linearizable_read import LinearizableKVReader
+from .linearizable_read import LinearizableKVReader, ReadBarrierEvidence
 from .membership import ReconfigurableRaftCluster
 from .membership_replication import MembershipAwareLeaderReplicator
 from .raft import LogEntry, RaftNode
@@ -188,6 +188,39 @@ class LeaderKVService:
             key,
             max_attempts_per_peer=max_attempts_per_peer,
         )
+
+    def linearizable_barrier(
+        self,
+        leader_id: str,
+        expected_generation: int,
+        *,
+        max_attempts_per_peer: int = 8,
+    ) -> ReadBarrierEvidence:
+        """Confirm generation-fenced leader authority without creating client history."""
+
+        if max_attempts_per_peer <= 0:
+            raise ValueError("max_attempts_per_peer must be positive")
+        identity = self._require_generation(leader_id, expected_generation)
+        leader = self.cluster.node(leader_id)
+        replicator = self._new_replicator(leader)
+        self._ensure_current_term_commit(
+            identity,
+            replicator,
+            max_attempts_per_peer=max_attempts_per_peer,
+        )
+        reader = LinearizableKVReader(self.kv, replicator)
+        evidence = reader.barrier(max_attempts_per_peer=max_attempts_per_peer)
+        self._require_generation(leader_id, expected_generation)
+        self.sim._record(
+            "raft-leader-service-barrier",
+            leader=leader_id,
+            term=identity.term,
+            generation=identity.generation,
+            commit_index=evidence.commit_index,
+            acknowledged_voters=evidence.acknowledged_voters,
+            quorum_mode=evidence.quorum_mode,
+        )
+        return evidence
 
     def _commit_write(
         self,
