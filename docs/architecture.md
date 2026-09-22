@@ -102,10 +102,16 @@ same deterministic simulator and fault model. It includes durable promise/accept
 state, prepare/accept quorums, highest-accepted-value adoption, learner recovery, and
 an independent durable-evidence safety harness.
 
+The Paxos path is now integrated with seeded proposal/fault/lifecycle exploration and
+persisted exact-replay trial artifacts. Randomness is compiled away before execution;
+replay verifies the classified outcome, objective chosen evidence, safety-violation
+classification, and complete structured trace. Quorum loss without a chosen value is
+recorded as incomplete evidence rather than misclassified as a safety failure.
+
 This does not alter the original Raft replay/artifact compatibility boundary and does
 not claim Multi-Paxos. Autonomous runtime scheduling, higher-level operation
-orchestration, Multi-Paxos, and real-network deployment remain separate future
-projects.
+orchestration, Multi-decree/Multi-Paxos work, and real-network deployment remain
+separate future projects.
 
 See `paxos.md` for the Phase 3 Paxos safety boundary.
 
