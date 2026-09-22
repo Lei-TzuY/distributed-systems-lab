@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .membership import ReconfigurableRaftCluster, VotingConfiguration
+from .membership import ReconfigurableRaftCluster
 from .raft import RaftRole
 from .replication import LeaderReplicator, ReplicationError
 
