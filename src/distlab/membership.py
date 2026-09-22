@@ -345,7 +345,7 @@ class ReconfigurableRaftNode(RaftNode):
             )
             return
         if response.term > self.current_term:
-            self._advance_term(response.term)
+            self._advance_term(response.term, rearm_if_leader=True)
             return
         volatile = self.sim.volatile_state[self.node_id]
         prospective_term = volatile.get("pre_vote_term")
@@ -441,7 +441,7 @@ class ReconfigurableRaftNode(RaftNode):
             )
             return
         if response.term > self.current_term:
-            self._advance_term(response.term)
+            self._advance_term(response.term, rearm_if_leader=True)
             return
         if response.term != self.current_term or self.role is not RaftRole.CANDIDATE:
             return
