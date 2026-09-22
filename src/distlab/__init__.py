@@ -61,6 +61,22 @@ from .linearizable_read import (
     LinearizableReadError,
     ReadQuorumUnavailable,
 )
+from .paxos import (
+    Accepted,
+    AcceptedValue,
+    AcceptRequest,
+    Learn,
+    LearnedDecision,
+    PaxosCluster,
+    PaxosError,
+    PaxosNode,
+    PaxosProposalActive,
+    PaxosSafetyHarness,
+    PaxosSafetyViolation,
+    Prepare,
+    Promise,
+    ProposalNumber,
+)
 from .raft import (
     AppendEntries,
     AppendEntriesResponse,
@@ -116,6 +132,9 @@ from .workload_minimizer import (
 )
 
 __all__ = [
+    "AcceptRequest",
+    "Accepted",
+    "AcceptedValue",
     "AppendEntries",
     "AppendEntriesResponse",
     "AppliedEntry",
@@ -166,6 +185,8 @@ __all__ = [
     "LeaderRuntimeUnavailable",
     "LeadershipLifecycleEvent",
     "LeadershipLifecycleKind",
+    "Learn",
+    "LearnedDecision",
     "LifecycleScheduleMinimizationResult",
     "LinearizabilityResult",
     "LinearizableKVReader",
@@ -180,8 +201,17 @@ __all__ = [
     "NonLinearizableHistoryMinimizer",
     "NonLinearizableLifecycleScheduleMinimizer",
     "OperationHistory",
+    "PaxosCluster",
+    "PaxosError",
+    "PaxosNode",
+    "PaxosProposalActive",
+    "PaxosSafetyHarness",
+    "PaxosSafetyViolation",
     "PreVote",
     "PreVoteResponse",
+    "Prepare",
+    "Promise",
+    "ProposalNumber",
     "Put",
     "RaftCluster",
     "RaftNode",
@@ -210,4 +240,5 @@ __all__ = [
     "StateMachineApplier",
     "StateMachineSafetyViolation",
     "TraceRecord",
+
 ]

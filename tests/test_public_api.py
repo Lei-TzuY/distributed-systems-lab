@@ -10,6 +10,9 @@ def test_schedule_generation_and_reduction_are_public() -> None:
         "NodeLifecycleKind",
         "NonLinearizableClientWorkloadMinimizer",
         "NonLinearizableLifecycleScheduleMinimizer",
+        "PaxosCluster",
+        "PaxosSafetyHarness",
+        "ProposalNumber",
         "SeededLifecycleGenerator",
         "SeededLifecycleSchedule",
     }
