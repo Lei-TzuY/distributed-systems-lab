@@ -80,7 +80,7 @@ def test_transfer_completes_when_source_restarts_before_target_wins(monkeypatch)
         and record.details["src"] == "n2"
         and record.details["dst"] == "n1"
         and record.details["ordinal"] == 2
-        and record.details["payload_type"] == "RequestVote"
+        and type(record.details["payload"]).__name__ == "RequestVote"
         for record in sim.trace
     )
     assert any(record.kind == "raft-leadership-transfer-complete" for record in sim.trace)
