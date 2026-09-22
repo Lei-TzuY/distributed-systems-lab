@@ -135,3 +135,45 @@ def test_retry_rejects_transferee_that_fell_behind_without_consuming_attempt() -
     assert attempt_id in transport._active_attempts
     assert target.role is RaftRole.FOLLOWER
     harness.checkpoint()
+
+
+def test_retry_rejects_divergent_retained_log_before_enqueue() -> None:
+    sim, cluster = _leader_cluster()
+    transport = LeadershipTransferTransport.for_cluster(cluster)
+    harness = RaftSafetyHarness(cluster)
+    harness.checkpoint()
+
+    leader = cluster.node("n1")
+    target = cluster.node("n2")
+    shared_entry = LogEntry(term=leader.current_term, command="set shared=1")
+    sim.persistent_state[leader.node_id]["log"] = (*leader.log, shared_entry)
+    sim.persistent_state[target.node_id]["log"] = (*target.log, shared_entry)
+    attempt_id = transport.send_timeout_now("n1", "n2", term=leader.current_term)
+    sim.run()
+    assert leader.role is RaftRole.LEADER
+
+    original_target_log = target.log
+    sim.persistent_state[target.node_id]["log"] = (
+        *original_target_log[:-1],
+        LogEntry(term=shared_entry.term, command="set divergent=1"),
+    )
+    assert target.last_log_index == leader.last_log_index
+    assert target.last_log_term == leader.last_log_term
+    retry_count = sum(record.kind == "raft-timeout-now-retry" for record in sim.trace)
+    send_count = sum(
+        record.kind == "send" and isinstance(record.details["payload"], TimeoutNow)
+        for record in sim.trace
+    )
+
+    with pytest.raises(RuntimeError, match="matching retained logs"):
+        retry_timeout_now(transport, attempt_id)
+
+    assert sum(record.kind == "raft-timeout-now-retry" for record in sim.trace) == retry_count
+    assert sum(
+        record.kind == "send" and isinstance(record.details["payload"], TimeoutNow)
+        for record in sim.trace
+    ) == send_count
+    assert attempt_id in transport._active_attempts
+
+    sim.persistent_state[target.node_id]["log"] = original_target_log
+    harness.checkpoint()
