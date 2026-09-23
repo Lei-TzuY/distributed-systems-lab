@@ -330,7 +330,11 @@ class MultiPaxosNode:
             self.sim.send(self.node_id, request.ballot.proposer_id, response)
 
     def _receive_accepted(self, response: LeaderAccepted) -> None:
-        if response.ballot != self._leader_ballot or response.slot not in self._pending:
+        if (
+            response.ballot != self._leader_ballot
+            or response.slot not in self._pending
+            or response.acceptor_id not in self.cluster.nodes
+        ):
             return
         if response.value != self._pending[response.slot]:
             raise PaxosSafetyViolation(
