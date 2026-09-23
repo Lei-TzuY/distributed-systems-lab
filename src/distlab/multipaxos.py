@@ -84,14 +84,22 @@ class MultiPaxosCluster:
         for slot, records in by_slot.items():
             candidates: list[Any] = []
             for ballot, value, _ in records:
-                acceptors = {node for b, v, node in records if b == ballot and v == value}
+                acceptors = {
+                    node
+                    for candidate_ballot, candidate_value, node in records
+                    if candidate_ballot == ballot and candidate_value == value
+                }
                 if len(acceptors) >= self.quorum_size:
                     candidates.append(value)
             if candidates and any(value != candidates[0] for value in candidates[1:]):
-                raise PaxosSafetyViolation(f"Multi-Paxos slot {slot} has conflicting quorums")
+                raise PaxosSafetyViolation(
+                    f"Multi-Paxos slot {slot} has conflicting quorums"
+                )
             chosen = self._chosen.get(slot)
             if chosen is not None and candidates and chosen.value != candidates[0]:
-                raise PaxosSafetyViolation(f"Multi-Paxos slot {slot} runtime/durable mismatch")
+                raise PaxosSafetyViolation(
+                    f"Multi-Paxos slot {slot} runtime/durable mismatch"
+                )
 
 
 class MultiPaxosNode:
@@ -100,7 +108,12 @@ class MultiPaxosNode:
     _HISTORY = "multipaxos_accept_history"
     _LAST_ROUND = "multipaxos_last_round"
 
-    def __init__(self, cluster: MultiPaxosCluster, node_id: str, peers: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        cluster: MultiPaxosCluster,
+        node_id: str,
+        peers: tuple[str, ...],
+    ) -> None:
         self.cluster = cluster
         self.sim = cluster.sim
         self.node_id = node_id
@@ -129,7 +142,10 @@ class MultiPaxosNode:
 
     @property
     def has_leader_authority(self) -> bool:
-        return self._leader_ballot is not None and len(self._promises) >= self.cluster.quorum_size
+        return (
+            self._leader_ballot is not None
+            and len(self._promises) >= self.cluster.quorum_size
+        )
 
     def prepare_leadership(self, *, round_number: int | None = None) -> ProposalNumber:
         if not self.sim.is_alive(self.node_id):
@@ -170,13 +186,18 @@ class MultiPaxosNode:
         for peer in self.peers:
             self.sim.send(self.node_id, peer, request)
         self.sim._record(
-            "multipaxos-phase2-start", slot=slot, leader=self.node_id,
-            ballot=self._leader_ballot, value=chosen_value,
+            "multipaxos-phase2-start",
+            slot=slot,
+            leader=self.node_id,
+            ballot=self._leader_ballot,
+            value=chosen_value,
         )
 
     def _adopted_value(self, slot: int) -> Any | None:
         accepted = [
-            item for promise in self._promises.values() for item in promise.accepted
+            item
+            for promise in self._promises.values()
+            for item in promise.accepted
             if item.slot == slot
         ]
         if not accepted:
@@ -185,7 +206,9 @@ class MultiPaxosNode:
         values = [item.value for item in accepted if item.proposal == highest]
         first = values[0]
         if any(value != first for value in values[1:]):
-            raise PaxosSafetyViolation(f"slot {slot} has conflicting accepted values at {highest!r}")
+            raise PaxosSafetyViolation(
+                f"slot {slot} has conflicting accepted values at {highest!r}"
+            )
         return first
 
     def handle_message(self, sim: Simulator, message: Message) -> None:
@@ -224,28 +247,42 @@ class MultiPaxosNode:
             self.sim.send(self.node_id, request.ballot.proposer_id, promise)
 
     def _receive_promise(self, response: LeaderPromise) -> None:
-        if response.ballot != self._leader_ballot or response.acceptor_id not in self.cluster.nodes:
+        if (
+            response.ballot != self._leader_ballot
+            or response.acceptor_id not in self.cluster.nodes
+        ):
             return
         self._promises.setdefault(response.acceptor_id, response)
         if len(self._promises) == self.cluster.quorum_size:
             self.sim._record(
-                "multipaxos-phase1-complete", leader=self.node_id,
-                ballot=response.ballot, promises=tuple(sorted(self._promises)),
+                "multipaxos-phase1-complete",
+                leader=self.node_id,
+                ballot=response.ballot,
+                promises=tuple(sorted(self._promises)),
             )
 
     def _receive_accept(self, request: LeaderAccept) -> None:
         promised = self.promised_ballot
         if promised is not None and request.ballot < promised:
             self.sim._record(
-                "multipaxos-accept-rejected", slot=request.slot, acceptor=self.node_id,
-                ballot=request.ballot, promised=promised,
+                "multipaxos-accept-rejected",
+                slot=request.slot,
+                acceptor=self.node_id,
+                ballot=request.ballot,
+                promised=promised,
             )
             return
         state = self.sim.persistent_state[self.node_id]
         state[self._PROMISED] = request.ballot
         current = state[self._ACCEPTED].get(request.slot)
-        if current is not None and current.proposal == request.ballot and current.value != request.value:
-            raise PaxosSafetyViolation("same Multi-Paxos ballot accepted conflicting values")
+        if (
+            current is not None
+            and current.proposal == request.ballot
+            and current.value != request.value
+        ):
+            raise PaxosSafetyViolation(
+                "same Multi-Paxos ballot accepted conflicting values"
+            )
         accepted = SlotAcceptedValue(request.slot, request.ballot, request.value)
         state[self._ACCEPTED][request.slot] = accepted
         if accepted not in state[self._HISTORY]:
@@ -260,7 +297,9 @@ class MultiPaxosNode:
         if response.ballot != self._leader_ballot or response.slot not in self._pending:
             return
         if response.value != self._pending[response.slot]:
-            raise PaxosSafetyViolation("Multi-Paxos accepted response changed proposed value")
+            raise PaxosSafetyViolation(
+                "Multi-Paxos accepted response changed proposed value"
+            )
         accepted_by = self._accepted_by[response.slot]
         accepted_by.add(response.acceptor_id)
         if len(accepted_by) >= self.cluster.quorum_size:
