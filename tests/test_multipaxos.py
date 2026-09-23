@@ -2,7 +2,12 @@ import copy
 
 import pytest
 
-from distlab.multipaxos import LeaderAccept, LeaderAccepted, MultiPaxosCluster
+from distlab.multipaxos import (
+    LeaderAccept,
+    LeaderAccepted,
+    LeaderPrepare,
+    MultiPaxosCluster,
+)
 from distlab.paxos import PaxosError, ProposalNumber
 from distlab.simulator import Simulator
 
@@ -164,4 +169,18 @@ def test_non_member_accepted_response_cannot_form_quorum() -> None:
 
     assert cluster.chosen(8) is None
     assert leader._accepted_by[8] == {"n1"}
+    cluster.assert_safety()
+
+
+def test_non_member_proposer_cannot_mutate_acceptor_state() -> None:
+    sim, cluster = _cluster()
+    acceptor = cluster.node("n1")
+    outsider_ballot = ProposalNumber(99, "outsider")
+
+    sim.send("outsider", "n1", LeaderPrepare(outsider_ballot))
+    sim.send("outsider", "n1", LeaderAccept(9, outsider_ballot, "forged"))
+    sim.run()
+
+    assert acceptor.promised_ballot is None
+    assert all(item.slot != 9 for item in acceptor.accept_history)
     cluster.assert_safety()
