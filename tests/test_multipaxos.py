@@ -39,8 +39,12 @@ def test_new_leader_phase1_adopts_highest_previously_accepted_value() -> None:
     first_ballot = first.prepare_leadership(round_number=1)
     sim.run()
 
-    # Leave an accepted value below quorum by delivering Phase 2 only locally.
+    # Leave an accepted value below quorum: partition before Phase 2 so the
+    # leader accepts locally while its peer messages are deterministically dropped.
+    sim.partition(("n1",), ("n2", "n3"))
     first.propose(1, "old")
+    sim.heal_partition(("n1",), ("n2", "n3"))
+
     # A higher ballot must discover and preserve that accepted value through Phase 1.
     second = cluster.node("n2")
     second.prepare_leadership(round_number=2)
