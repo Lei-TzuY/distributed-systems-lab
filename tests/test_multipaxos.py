@@ -8,7 +8,8 @@ from distlab.multipaxos import (
     LeaderPrepare,
     MultiPaxosCluster,
 )
-from distlab.paxos import PaxosError, ProposalNumber
+from distlab.paxos import PaxosError, PaxosSafetyViolation, ProposalNumber
+from distlab.paxos_log import SlotAcceptedValue
 from distlab.simulator import Simulator
 
 
@@ -184,3 +185,32 @@ def test_non_member_proposer_cannot_mutate_acceptor_state() -> None:
     assert acceptor.promised_ballot is None
     assert all(item.slot != 9 for item in acceptor.accept_history)
     cluster.assert_safety()
+
+
+def test_member_cannot_persist_non_positive_slot_from_transport() -> None:
+    sim, cluster = _cluster()
+    leader = cluster.node("n1")
+    ballot = leader.prepare_leadership()
+    sim.run()
+    acceptor = cluster.node("n2")
+
+    sim.send("n1", "n2", LeaderAccept(0, ballot, "invalid"))
+    sim.send("n1", "n2", LeaderAccept(-1, ballot, "invalid"))
+    sim.run()
+
+    assert acceptor.accept_history == ()
+    assert sum(
+        record.kind == "multipaxos-accept-invalid-slot" for record in sim.trace
+    ) == 2
+    cluster.assert_safety()
+
+
+def test_runtime_reconstruction_fails_closed_on_invalid_durable_slot() -> None:
+    sim, _ = _cluster()
+    ballot = ProposalNumber(1, "n1")
+    sim.persistent_state["n1"]["multipaxos_accept_history"] = (
+        SlotAcceptedValue(0, ballot, "corrupt"),
+    )
+
+    with pytest.raises(PaxosSafetyViolation, match="invalid slot 0"):
+        _reconstruct(sim)
