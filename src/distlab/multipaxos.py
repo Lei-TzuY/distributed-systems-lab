@@ -48,6 +48,7 @@ class MultiPaxosCluster:
             for node_id in node_ids
         }
         self._chosen: dict[int, SlotLearnedDecision] = {}
+        self._recover_chosen()
         for node_id, node in self.nodes.items():
             sim.register(
                 node_id,
@@ -65,6 +66,41 @@ class MultiPaxosCluster:
 
     def chosen(self, slot: int) -> SlotLearnedDecision | None:
         return self._chosen.get(slot)
+
+    def _recover_chosen(self) -> None:
+        by_slot: dict[int, list[tuple[ProposalNumber, Any, str]]] = {}
+        for node_id, node in self.nodes.items():
+            for accepted in node.accept_history:
+                by_slot.setdefault(accepted.slot, []).append(
+                    (accepted.proposal, accepted.value, node_id)
+                )
+        for slot, records in by_slot.items():
+            quorum_evidence: list[tuple[ProposalNumber, Any]] = []
+            for ballot, value, _ in records:
+                acceptors = {
+                    node_id
+                    for candidate_ballot, candidate_value, node_id in records
+                    if candidate_ballot == ballot and candidate_value == value
+                }
+                evidence = (ballot, value)
+                if len(acceptors) >= self.quorum_size and evidence not in quorum_evidence:
+                    quorum_evidence.append(evidence)
+            if not quorum_evidence:
+                continue
+            first_value = quorum_evidence[0][1]
+            if any(value != first_value for _, value in quorum_evidence[1:]):
+                raise PaxosSafetyViolation(
+                    f"Multi-Paxos slot {slot} has conflicting durable quorums"
+                )
+            ballot = max(ballot for ballot, _ in quorum_evidence)
+            self._chosen[slot] = SlotLearnedDecision(slot, ballot, first_value)
+            self.sim._record(
+                "multipaxos-chosen-recovered",
+                slot=slot,
+                ballot=ballot,
+                value=first_value,
+            )
+        self.assert_safety()
 
     def _record_chosen(self, slot: int, ballot: ProposalNumber, value: Any) -> None:
         current = self._chosen.get(slot)
