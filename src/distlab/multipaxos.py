@@ -71,6 +71,10 @@ class MultiPaxosCluster:
         by_slot: dict[int, list[tuple[ProposalNumber, Any, str]]] = {}
         for node_id, node in self.nodes.items():
             for accepted in node.accept_history:
+                if accepted.slot <= 0:
+                    raise PaxosSafetyViolation(
+                        f"Multi-Paxos durable history has invalid slot {accepted.slot}"
+                    )
                 by_slot.setdefault(accepted.slot, []).append(
                     (accepted.proposal, accepted.value, node_id)
                 )
@@ -114,6 +118,10 @@ class MultiPaxosCluster:
         by_slot: dict[int, list[tuple[ProposalNumber, Any, str]]] = {}
         for node_id, node in self.nodes.items():
             for accepted in node.accept_history:
+                if accepted.slot <= 0:
+                    raise PaxosSafetyViolation(
+                        f"Multi-Paxos durable history has invalid slot {accepted.slot}"
+                    )
                 by_slot.setdefault(accepted.slot, []).append(
                     (accepted.proposal, accepted.value, node_id)
                 )
@@ -304,6 +312,14 @@ class MultiPaxosNode:
             )
 
     def _receive_accept(self, request: LeaderAccept) -> None:
+        if request.slot <= 0:
+            self.sim._record(
+                "multipaxos-accept-invalid-slot",
+                slot=request.slot,
+                acceptor=self.node_id,
+                ballot=request.ballot,
+            )
+            return
         promised = self.promised_ballot
         if promised is not None and request.ballot < promised:
             self.sim._record(
@@ -336,6 +352,8 @@ class MultiPaxosNode:
             self.sim.send(self.node_id, request.ballot.proposer_id, response)
 
     def _receive_accepted(self, response: LeaderAccepted) -> None:
+        if response.slot <= 0:
+            return
         if (
             response.ballot != self._leader_ballot
             or response.slot not in self._pending
