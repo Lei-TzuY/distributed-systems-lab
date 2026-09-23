@@ -63,7 +63,7 @@ def test_recovery_uses_durable_majority_even_when_learn_messages_were_not_delive
 
 def test_recovery_fails_closed_on_conflicting_durable_quorum_evidence() -> None:
     sim = Simulator()
-    cluster = PaxosLogCluster(sim, ("n1", "n2", "n3"))
+    PaxosLogCluster(sim, ("n1", "n2", "n3"))
     first = ProposalNumber(1, "n1")
     second = ProposalNumber(2, "n2")
 
