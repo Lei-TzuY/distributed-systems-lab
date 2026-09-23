@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 
 from distlab.multipaxos import LeaderAccept, MultiPaxosCluster
@@ -8,6 +10,12 @@ from distlab.simulator import Simulator
 def _cluster() -> tuple[Simulator, MultiPaxosCluster]:
     sim = Simulator()
     return sim, MultiPaxosCluster(sim, ("n1", "n2", "n3"))
+
+
+def _reconstruct(sim: Simulator) -> tuple[Simulator, MultiPaxosCluster]:
+    recovered_sim = Simulator()
+    recovered_sim.persistent_state.update(copy.deepcopy(sim.persistent_state))
+    return recovered_sim, MultiPaxosCluster(recovered_sim, ("n1", "n2", "n3"))
 
 
 def test_stable_leader_amortizes_phase1_across_slots() -> None:
@@ -99,3 +107,38 @@ def test_crash_discards_volatile_authority_but_keeps_durable_global_promise() ->
     sim.run()
     assert cluster.chosen(1).value == "safe"
     cluster.assert_safety()
+
+
+def test_runtime_reconstruction_recovers_chosen_slots_from_durable_quorum() -> None:
+    sim, cluster = _cluster()
+    leader = cluster.node("n1")
+    ballot = leader.prepare_leadership()
+    sim.run()
+    leader.propose(1, "alpha")
+    leader.propose(2, "beta")
+    sim.run()
+
+    recovered_sim, recovered = _reconstruct(sim)
+
+    assert recovered.chosen(1).value == "alpha"
+    assert recovered.chosen(1).proposal == ballot
+    assert recovered.chosen(2).value == "beta"
+    assert recovered.chosen(2).proposal == ballot
+    assert sum(
+        record.kind == "multipaxos-chosen-recovered" for record in recovered_sim.trace
+    ) == 2
+    recovered.assert_safety()
+
+
+def test_runtime_reconstruction_does_not_infer_chosen_from_minority_acceptance() -> None:
+    sim, cluster = _cluster()
+    leader = cluster.node("n1")
+    leader.prepare_leadership()
+    sim.run()
+    sim.partition(("n1",), ("n2", "n3"))
+    leader.propose(7, "minority")
+
+    _, recovered = _reconstruct(sim)
+
+    assert recovered.chosen(7) is None
+    recovered.assert_safety()
