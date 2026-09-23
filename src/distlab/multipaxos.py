@@ -252,7 +252,10 @@ class MultiPaxosNode:
             raise ValueError("invalid Multi-Paxos message delivery")
         payload = message.payload
         if isinstance(payload, LeaderPrepare):
-            if message.src != payload.ballot.proposer_id:
+            if (
+                message.src != payload.ballot.proposer_id
+                or payload.ballot.proposer_id not in self.cluster.nodes
+            ):
                 return
             self._receive_prepare(payload)
         elif isinstance(payload, LeaderPromise):
@@ -260,7 +263,10 @@ class MultiPaxosNode:
                 return
             self._receive_promise(payload)
         elif isinstance(payload, LeaderAccept):
-            if message.src != payload.ballot.proposer_id:
+            if (
+                message.src != payload.ballot.proposer_id
+                or payload.ballot.proposer_id not in self.cluster.nodes
+            ):
                 return
             self._receive_accept(payload)
         elif isinstance(payload, LeaderAccepted):
