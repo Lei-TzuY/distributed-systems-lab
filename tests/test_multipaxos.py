@@ -2,7 +2,7 @@ import copy
 
 import pytest
 
-from distlab.multipaxos import LeaderAccept, MultiPaxosCluster
+from distlab.multipaxos import LeaderAccept, LeaderAccepted, MultiPaxosCluster
 from distlab.paxos import PaxosError, ProposalNumber
 from distlab.simulator import Simulator
 
@@ -142,3 +142,26 @@ def test_runtime_reconstruction_does_not_infer_chosen_from_minority_acceptance()
 
     assert recovered.chosen(7) is None
     recovered.assert_safety()
+
+
+def test_non_member_accepted_response_cannot_form_quorum() -> None:
+    sim, cluster = _cluster()
+    leader = cluster.node("n1")
+    ballot = leader.prepare_leadership()
+    sim.run()
+    assert leader.has_leader_authority
+
+    sim.partition(("n1",), ("n2", "n3"))
+    leader.propose(8, "member-only")
+    assert cluster.chosen(8) is None
+
+    sim.send(
+        "outsider",
+        "n1",
+        LeaderAccepted(8, ballot, "outsider", "member-only"),
+    )
+    sim.run()
+
+    assert cluster.chosen(8) is None
+    assert leader._accepted_by[8] == {"n1"}
+    cluster.assert_safety()
