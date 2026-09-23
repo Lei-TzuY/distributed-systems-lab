@@ -208,9 +208,11 @@ def test_member_cannot_persist_non_positive_slot_from_transport() -> None:
 def test_runtime_reconstruction_fails_closed_on_invalid_durable_slot() -> None:
     sim, _ = _cluster()
     ballot = ProposalNumber(1, "n1")
-    sim.persistent_state["n1"]["multipaxos_accept_history"] = (
-        SlotAcceptedValue(0, ballot, "corrupt"),
-    )
+    corrupt = object.__new__(SlotAcceptedValue)
+    object.__setattr__(corrupt, "slot", 0)
+    object.__setattr__(corrupt, "proposal", ballot)
+    object.__setattr__(corrupt, "value", "corrupt")
+    sim.persistent_state["n1"]["multipaxos_accept_history"] = (corrupt,)
 
     with pytest.raises(PaxosSafetyViolation, match="invalid slot 0"):
         _reconstruct(sim)
