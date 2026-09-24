@@ -219,6 +219,15 @@ def test_runtime_reconstruction_fails_closed_on_invalid_durable_slot() -> None:
         _reconstruct(sim)
 
 
+def test_runtime_reconstruction_fails_closed_on_non_member_durable_proposer() -> None:
+    sim, _ = _cluster()
+    corrupt = SlotAcceptedValue(5, ProposalNumber(1, "outsider"), "corrupt")
+    sim.persistent_state["n1"]["multipaxos_accept_history"] = (corrupt,)
+
+    with pytest.raises(PaxosSafetyViolation, match="non-member proposer 'outsider'"):
+        _reconstruct(sim)
+
+
 @pytest.mark.parametrize(
     "accepted",
     (
