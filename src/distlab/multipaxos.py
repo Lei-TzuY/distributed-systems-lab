@@ -67,7 +67,9 @@ class MultiPaxosCluster:
     def chosen(self, slot: int) -> SlotLearnedDecision | None:
         return self._chosen.get(slot)
 
-    def _validate_durable_accepted(self, accepted: SlotAcceptedValue) -> None:
+    def _validate_durable_accepted(
+        self, node: MultiPaxosNode, accepted: SlotAcceptedValue
+    ) -> None:
         if accepted.slot <= 0:
             raise PaxosSafetyViolation(
                 f"Multi-Paxos durable history has invalid slot {accepted.slot}"
@@ -77,12 +79,17 @@ class MultiPaxosCluster:
                 "Multi-Paxos durable history has non-member proposer "
                 f"{accepted.proposal.proposer_id!r}"
             )
+        promised = node.promised_ballot
+        if promised is None or accepted.proposal > promised:
+            raise PaxosSafetyViolation(
+                "Multi-Paxos durable accepted proposal exceeds promised ballot"
+            )
 
     def _recover_chosen(self) -> None:
         by_slot: dict[int, list[tuple[ProposalNumber, Any, str]]] = {}
         for node_id, node in self.nodes.items():
             for accepted in node.accept_history:
-                self._validate_durable_accepted(accepted)
+                self._validate_durable_accepted(node, accepted)
                 by_slot.setdefault(accepted.slot, []).append(
                     (accepted.proposal, accepted.value, node_id)
                 )
@@ -126,7 +133,7 @@ class MultiPaxosCluster:
         by_slot: dict[int, list[tuple[ProposalNumber, Any, str]]] = {}
         for node_id, node in self.nodes.items():
             for accepted in node.accept_history:
-                self._validate_durable_accepted(accepted)
+                self._validate_durable_accepted(node, accepted)
                 by_slot.setdefault(accepted.slot, []).append(
                     (accepted.proposal, accepted.value, node_id)
                 )
