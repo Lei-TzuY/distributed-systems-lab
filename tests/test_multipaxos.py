@@ -254,3 +254,26 @@ def test_forged_promise_evidence_cannot_grant_phase1_authority(
         record.kind == "multipaxos-promise-invalid-evidence" for record in sim.trace
     ) == 1
     cluster.assert_safety()
+
+
+def test_conflicting_same_ballot_promise_evidence_cannot_grant_phase1_authority() -> None:
+    sim, cluster = _cluster()
+    leader = cluster.node("n1")
+    sim.partition(("n1",), ("n2", "n3"))
+    ballot = leader.prepare_leadership(round_number=2)
+    assert not leader.has_leader_authority
+
+    accepted = (
+        SlotAcceptedValue(4, ProposalNumber(1, "n2"), "alpha"),
+        SlotAcceptedValue(4, ProposalNumber(1, "n2"), "beta"),
+    )
+    sim.heal_link("n2", "n1")
+    sim.send("n2", "n1", LeaderPromise(ballot, "n2", accepted))
+    sim.run()
+
+    assert not leader.has_leader_authority
+    assert set(leader._promises) == {"n1"}
+    assert sum(
+        record.kind == "multipaxos-promise-invalid-evidence" for record in sim.trace
+    ) == 1
+    cluster.assert_safety()
