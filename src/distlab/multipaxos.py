@@ -85,11 +85,22 @@ class MultiPaxosCluster:
                 "Multi-Paxos durable accepted proposal exceeds promised ballot"
             )
 
+    def _validate_durable_history(self, node: MultiPaxosNode) -> None:
+        by_slot_ballot: dict[tuple[int, ProposalNumber], Any] = {}
+        for accepted in node.accept_history:
+            self._validate_durable_accepted(node, accepted)
+            key = (accepted.slot, accepted.proposal)
+            if key in by_slot_ballot and by_slot_ballot[key] != accepted.value:
+                raise PaxosSafetyViolation(
+                    "same Multi-Paxos ballot has conflicting durable accepted values"
+                )
+            by_slot_ballot[key] = accepted.value
+
     def _recover_chosen(self) -> None:
         by_slot: dict[int, list[tuple[ProposalNumber, Any, str]]] = {}
         for node_id, node in self.nodes.items():
+            self._validate_durable_history(node)
             for accepted in node.accept_history:
-                self._validate_durable_accepted(node, accepted)
                 by_slot.setdefault(accepted.slot, []).append(
                     (accepted.proposal, accepted.value, node_id)
                 )
@@ -132,8 +143,8 @@ class MultiPaxosCluster:
     def assert_safety(self) -> None:
         by_slot: dict[int, list[tuple[ProposalNumber, Any, str]]] = {}
         for node_id, node in self.nodes.items():
+            self._validate_durable_history(node)
             for accepted in node.accept_history:
-                self._validate_durable_accepted(node, accepted)
                 by_slot.setdefault(accepted.slot, []).append(
                     (accepted.proposal, accepted.value, node_id)
                 )
