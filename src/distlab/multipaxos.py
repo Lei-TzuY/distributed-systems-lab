@@ -302,6 +302,20 @@ class MultiPaxosNode:
             or response.acceptor_id not in self.cluster.nodes
         ):
             return
+        for accepted in response.accepted:
+            if (
+                accepted.slot <= 0
+                or accepted.proposal.proposer_id not in self.cluster.nodes
+                or accepted.proposal > response.ballot
+            ):
+                self.sim._record(
+                    "multipaxos-promise-invalid-evidence",
+                    leader=self.node_id,
+                    acceptor=response.acceptor_id,
+                    ballot=response.ballot,
+                    accepted=accepted,
+                )
+                return
         self._promises.setdefault(response.acceptor_id, response)
         if len(self._promises) == self.cluster.quorum_size:
             self.sim._record(

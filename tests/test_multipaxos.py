@@ -6,6 +6,7 @@ from distlab.multipaxos import (
     LeaderAccept,
     LeaderAccepted,
     LeaderPrepare,
+    LeaderPromise,
     MultiPaxosCluster,
 )
 from distlab.paxos import PaxosError, PaxosSafetyViolation, ProposalNumber
@@ -216,3 +217,31 @@ def test_runtime_reconstruction_fails_closed_on_invalid_durable_slot() -> None:
 
     with pytest.raises(PaxosSafetyViolation, match="invalid slot 0"):
         _reconstruct(sim)
+
+
+@pytest.mark.parametrize(
+    "accepted",
+    (
+        SlotAcceptedValue(4, ProposalNumber(3, "n2"), "future"),
+        SlotAcceptedValue(4, ProposalNumber(1, "outsider"), "outsider"),
+    ),
+)
+def test_forged_promise_evidence_cannot_grant_phase1_authority(
+    accepted: SlotAcceptedValue,
+) -> None:
+    sim, cluster = _cluster()
+    leader = cluster.node("n1")
+    sim.partition(("n1",), ("n2", "n3"))
+    ballot = leader.prepare_leadership(round_number=2)
+    assert not leader.has_leader_authority
+
+    sim.heal_link("n2", "n1")
+    sim.send("n2", "n1", LeaderPromise(ballot, "n2", (accepted,)))
+    sim.run()
+
+    assert not leader.has_leader_authority
+    assert set(leader._promises) == {"n1"}
+    assert sum(
+        record.kind == "multipaxos-promise-invalid-evidence" for record in sim.trace
+    ) == 1
+    cluster.assert_safety()
