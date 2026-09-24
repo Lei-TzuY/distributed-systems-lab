@@ -181,6 +181,11 @@ class MultiPaxosNode:
     def promised_ballot(self) -> ProposalNumber | None:
         value = self.sim.persistent_state[self.node_id][self._PROMISED]
         assert value is None or isinstance(value, ProposalNumber)
+        if value is not None and value.proposer_id not in self.cluster.nodes:
+            raise PaxosSafetyViolation(
+                "Multi-Paxos durable promise has non-member proposer "
+                f"{value.proposer_id!r}"
+            )
         return value
 
     @property
