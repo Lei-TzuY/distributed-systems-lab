@@ -330,11 +330,14 @@ class MultiPaxosNode:
             or response.acceptor_id not in self.cluster.nodes
         ):
             return
+        by_slot_ballot: dict[tuple[int, ProposalNumber], Any] = {}
         for accepted in response.accepted:
+            key = (accepted.slot, accepted.proposal)
             if (
                 accepted.slot <= 0
                 or accepted.proposal.proposer_id not in self.cluster.nodes
                 or accepted.proposal > response.ballot
+                or (key in by_slot_ballot and by_slot_ballot[key] != accepted.value)
             ):
                 self.sim._record(
                     "multipaxos-promise-invalid-evidence",
@@ -344,6 +347,7 @@ class MultiPaxosNode:
                     accepted=accepted,
                 )
                 return
+            by_slot_ballot[key] = accepted.value
         self._promises.setdefault(response.acceptor_id, response)
         if len(self._promises) == self.cluster.quorum_size:
             self.sim._record(
