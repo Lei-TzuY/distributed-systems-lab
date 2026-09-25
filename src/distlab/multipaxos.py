@@ -67,6 +67,9 @@ class MultiPaxosCluster:
     def chosen(self, slot: int) -> SlotLearnedDecision | None:
         return self._chosen.get(slot)
 
+    def chosen_slots(self) -> tuple[SlotLearnedDecision, ...]:
+        return tuple(self._chosen[slot] for slot in sorted(self._chosen))
+
     def _validate_durable_accepted(
         self, node: MultiPaxosNode, accepted: SlotAcceptedValue
     ) -> None:
