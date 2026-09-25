@@ -97,24 +97,26 @@ The next architectural frontier should therefore build on these integrated capab
 
 ## Phase 3 consensus breadth
 
-The first Phase 3 vertical slice adds crash-recoverable single-decree Paxos over the
-same deterministic simulator and fault model. It includes durable promise/accepted
-state, prepare/accept quorums, highest-accepted-value adoption, learner recovery, and
-an independent durable-evidence safety harness.
+Phase 3 now contains three explicit consensus layers:
 
-The Paxos path is now integrated with seeded proposal/fault/lifecycle exploration and
-persisted exact-replay trial artifacts. Randomness is compiled away before execution;
-replay verifies the classified outcome, objective chosen evidence, safety-violation
-classification, and complete structured trace. Quorum loss without a chosen value is
-recorded as incomplete evidence rather than misclassified as a safety failure.
+1. crash-recoverable single-decree Paxos with durable majority-evidence safety checks
+2. slot-indexed multi-decree Paxos with per-slot durability and ordered learned-prefix semantics
+3. stable-leader Multi-Paxos with one Phase-1 quorum per ballot, repeated Phase-2 proposals, higher-ballot takeover, durable chosen reconstruction, and fail-closed durable-evidence validation
 
-This does not alter the original Raft replay/artifact compatibility boundary and does
-not claim Multi-Paxos. Autonomous runtime scheduling, higher-level operation
-orchestration, The next Phase 3 layer adds slot-indexed multi-decree Paxos with per-slot durable
-acceptor state, independent chosen-value evidence, and gap-sensitive ordered learned
-prefixes. It still does not amortize Phase 1 across slots, so stable-leader Multi-Paxos
-remains a separate future project alongside real-network deployment.
+Single-decree Paxos and stable-leader Multi-Paxos both participate in deterministic
+seeded exploration. Randomness is compiled into explicit action, message-fault, and
+crash/restart schedules before execution. Exact-replay artifacts persist classified
+outcomes, objective chosen evidence, safety violations, and complete structured traces.
 
-See `paxos.md` for the Phase 3 Paxos safety boundary.
+Expected lack of quorum or missing leader authority is liveness/incomplete evidence,
+not a safety failure. Campaign execution stops early only for
+`PaxosSafetyViolation`.
+
+The original Raft replay/artifact compatibility boundary remains unchanged. The next
+Paxos frontier is no longer another durable-state corner guard; it is cross-layer log
+consumption such as contiguous chosen-prefix application and client-visible state
+machine semantics. Real-network deployment remains a separate future project.
+
+See `paxos.md` for the Phase 3 Paxos safety and replay boundaries.
 
 See `stability-checkpoint.md` for the replay and artifact compatibility contract.
