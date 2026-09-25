@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 import random
-from dataclasses import dataclass, fields, is_dataclass
-from enum import Enum, StrEnum
-from typing import Any
-
+from dataclasses import dataclass
+from enum import StrEnum
 from .lifecycle import NodeLifecycleKind, SeededLifecycleGenerator, SeededLifecycleSchedule
 from .paxos import (
     LearnedDecision,
@@ -17,6 +15,7 @@ from .paxos import (
     ProposalNumber,
 )
 from .randomized_faults import FaultOpportunity, SeededFaultGenerator, SeededFaultSchedule
+from .replay_codec import canonical_json, encode_trace
 from .simulator import Simulator, TraceRecord
 
 
@@ -396,7 +395,7 @@ class PaxosTrialArtifact:
             outcome=result.outcome,
             chosen=result.chosen,
             violation=result.violation,
-            trace_json=_encode_trace(result.trace),
+            trace_json=encode_trace(result.trace),
         )
 
     def to_json(self) -> str:
@@ -455,11 +454,11 @@ class PaxosTrialArtifact:
         try:
             outcome = PaxosScenarioOutcome(raw["outcome"])
             proposals = SeededPaxosProposalSchedule.from_json(
-                _canonical_json(raw["proposals"])
+                canonical_json(raw["proposals"])
             )
-            faults = SeededFaultSchedule.from_json(_canonical_json(raw["faults"]))
+            faults = SeededFaultSchedule.from_json(canonical_json(raw["faults"]))
             lifecycle = SeededLifecycleSchedule.from_json(
-                _canonical_json(raw["lifecycle"])
+                canonical_json(raw["lifecycle"])
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("invalid Paxos trial artifact") from exc
@@ -496,7 +495,7 @@ class PaxosTrialArtifact:
             outcome=outcome,
             chosen=chosen,
             violation=violation,
-            trace_json=_canonical_json(trace),
+            trace_json=canonical_json(trace),
         )
 
     def replay(self) -> PaxosScenarioResult:
@@ -516,7 +515,7 @@ class PaxosTrialArtifact:
             raise PaxosReplayMismatch("Paxos chosen evidence changed during replay")
         if result.violation != self.violation:
             raise PaxosReplayMismatch("Paxos safety violation changed during replay")
-        if _encode_trace(result.trace) != self.trace_json:
+        if encode_trace(result.trace) != self.trace_json:
             raise PaxosReplayMismatch("Paxos trace did not replay exactly")
         return result
 
@@ -610,7 +609,7 @@ class SeededPaxosCampaign:
         )
 
 
-def _encode_trace(trace: tuple[TraceRecord, ...]) -> str:
+def encode_trace(trace: tuple[TraceRecord, ...]) -> str:
     payload = [
         {
             "time": record.time,
@@ -644,5 +643,5 @@ def _json_value(value: Any) -> Any:
     raise TypeError(f"cannot encode Paxos trace value {type(value).__name__}")
 
 
-def _canonical_json(value: Any) -> str:
+def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
