@@ -4,6 +4,7 @@ import json
 import random
 from dataclasses import dataclass
 from enum import StrEnum
+
 from .lifecycle import NodeLifecycleKind, SeededLifecycleGenerator, SeededLifecycleSchedule
 from .paxos import (
     LearnedDecision,
@@ -607,41 +608,3 @@ class SeededPaxosCampaign:
             trials=tuple(trials),
             safety_failure=None,
         )
-
-
-def encode_trace(trace: tuple[TraceRecord, ...]) -> str:
-    payload = [
-        {
-            "time": record.time,
-            "kind": record.kind,
-            "details": _json_value(record.details),
-        }
-        for record in trace
-    ]
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
-
-
-def _json_value(value: Any) -> Any:
-    if is_dataclass(value):
-        return {
-            "__type__": type(value).__name__,
-            **{
-                field.name: _json_value(getattr(value, field.name))
-                for field in fields(value)
-            },
-        }
-    if isinstance(value, Enum):
-        return value.value
-    if isinstance(value, dict):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [_json_value(item) for item in value]
-    if isinstance(value, (set, frozenset)):
-        return sorted((_json_value(item) for item in value), key=repr)
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    raise TypeError(f"cannot encode Paxos trace value {type(value).__name__}")
-
-
-def canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
