@@ -78,6 +78,28 @@ rejects conflicting chosen values, forged learned decisions without quorum evide
 or divergent learned prefixes. Crash/restart preserves slot promises, accepted state,
 learned gaps, and the proposer's durable round allocator.
 
-This remains multi-decree Paxos rather than Multi-Paxos: each slot performs its own
-Phase 1 and Phase 2. Stable-leader Phase-1 amortization is deliberately deferred until
-the slot-indexed durability and ordered-prefix invariants are established.
+The slot-indexed implementation remains useful as the unamortized correctness
+baseline. Stable-leader Multi-Paxos now builds on it with one Phase-1 quorum per
+leader ballot and repeated Phase-2 proposals across slots.
+
+## Stable-leader Multi-Paxos
+
+`MultiPaxosCluster` provides durable global ballot promises, Phase-1 leader
+authority, repeated Phase-2 proposals across slots, higher-ballot takeover with
+accepted-value adoption, and durable chosen reconstruction. Crash/restart discards
+volatile leader authority while retaining the ballot and accepted history needed for
+safe takeover.
+
+The Multi-Paxos path now also participates in seeded deterministic exploration.
+`SeededMultiPaxosActionGenerator` compiles leadership-prepare and slot-proposal
+actions before execution; message faults and lifecycle actions are persisted as
+explicit schedules. `MultiPaxosTrialArtifact` stores the classified outcome,
+sorted chosen-slot evidence, any safety violation, and the complete structured trace.
+
+Exact replay requires all of those outputs to match. A run that loses quorum or
+attempts a proposal without active Phase-1 authority is `incomplete`, not a safety
+failure. Only `PaxosSafetyViolation` terminates a campaign as a correctness failure.
+
+This layer still does not provide ordered state-machine application, client semantics,
+membership changes, batching, or production networking. Those remain separate
+cross-layer milestones.
