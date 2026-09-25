@@ -44,6 +44,8 @@ class MultiPaxosAction:
     value: str | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.kind, MultiPaxosActionKind):
+            raise ValueError("kind must be a MultiPaxosActionKind")
         if not self.action_id:
             raise ValueError("action_id must be non-empty")
         if not self.node_id:
@@ -568,10 +570,11 @@ class MultiPaxosTrialArtifact:
             if not isinstance(value, str):
                 raise ValueError("chosen campaign value must be a string")
             chosen.append(SlotLearnedDecision(slot, proposal, value))
-        if tuple(decision.slot for decision in chosen) != tuple(
-            sorted(decision.slot for decision in chosen)
-        ):
+        chosen_slots = tuple(decision.slot for decision in chosen)
+        if chosen_slots != tuple(sorted(chosen_slots)):
             raise ValueError("chosen slots must be sorted")
+        if len(set(chosen_slots)) != len(chosen_slots):
+            raise ValueError("chosen slots must be unique")
 
         return cls(
             seed=seed,
