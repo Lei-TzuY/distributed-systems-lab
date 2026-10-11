@@ -48,7 +48,10 @@ def test_stable_leader_amortizes_phase1_across_slots() -> None:
     cluster.assert_safety()
 
 
-def test_new_leader_phase1_adopts_highest_previously_accepted_value() -> None:
+@pytest.mark.parametrize("accepted_value", [None, "old"])
+def test_new_leader_phase1_adopts_highest_previously_accepted_value(
+    accepted_value: str | None,
+) -> None:
     sim, cluster = _cluster()
     first = cluster.node("n1")
     first_ballot = first.prepare_leadership(round_number=1)
@@ -57,7 +60,7 @@ def test_new_leader_phase1_adopts_highest_previously_accepted_value() -> None:
     # Leave an accepted value below quorum: partition before Phase 2 so the
     # leader accepts locally while its peer messages are deterministically dropped.
     sim.partition(("n1",), ("n2", "n3"))
-    first.propose(1, "old")
+    first.propose(1, accepted_value)
     sim.heal_partition(("n1",), ("n2", "n3"))
 
     # A higher ballot must discover and preserve that accepted value through Phase 1.
@@ -68,7 +71,7 @@ def test_new_leader_phase1_adopts_highest_previously_accepted_value() -> None:
 
     second.propose(1, "new")
     sim.run()
-    assert cluster.chosen(1).value == "old"
+    assert cluster.chosen(1).value == accepted_value
     assert cluster.chosen(1).proposal > first_ballot
     cluster.assert_safety()
 
@@ -253,4 +256,70 @@ def test_forged_promise_evidence_cannot_grant_phase1_authority(
     assert sum(
         record.kind == "multipaxos-promise-invalid-evidence" for record in sim.trace
     ) == 1
+    cluster.assert_safety()
+
+
+@pytest.mark.parametrize("reconstruct", [False, True])
+def test_chosen_null_survives_takeover_and_reconstruction(reconstruct: bool) -> None:
+    sim, cluster = _cluster()
+    first = cluster.node("n1")
+    first.prepare_leadership(round_number=1)
+    sim.run()
+    first.propose(1, None)
+    sim.run()
+    assert cluster.chosen(1) is not None
+    assert cluster.chosen(1).value is None
+
+    if reconstruct:
+        sim, cluster = _reconstruct(sim)
+    sim.crash("n1")
+    second = cluster.node("n2")
+    second.prepare_leadership(round_number=2)
+    sim.run()
+    assert second.has_leader_authority
+
+    second.propose(1, "replacement")
+    sim.run()
+    assert cluster.chosen(1).value is None
+    assert all(
+        cluster.node(node_id).accept_history[-1].value is None
+        for node_id in ("n2", "n3")
+    )
+    cluster.assert_safety()
+
+    # Absence of an accepted record in another slot must still use its new value.
+    second.propose(2, "fresh")
+    sim.run()
+    assert cluster.chosen(2).value == "fresh"
+    cluster.assert_safety()
+
+
+def test_highest_accepted_null_overrides_older_non_null_minority() -> None:
+    sim, cluster = _cluster()
+    first = cluster.node("n1")
+    first.prepare_leadership(round_number=1)
+    sim.run()
+    sim.partition(("n1",), ("n2", "n3"))
+    first.propose(1, "older-minority")
+
+    second = cluster.node("n2")
+    second.prepare_leadership(round_number=2)
+    sim.run()
+    assert second.has_leader_authority
+    second.propose(1, None)
+    sim.run()
+    assert cluster.chosen(1).value is None
+    assert first.accept_history[-1].value == "older-minority"
+
+    sim.heal_partition(("n1",), ("n2", "n3"))
+    first.prepare_leadership(round_number=3)
+    sim.run()
+    first.propose(1, "replacement")
+    sim.run()
+
+    assert cluster.chosen(1).value is None
+    assert all(
+        cluster.node(node_id).accept_history[-1].value is None
+        for node_id in cluster.node_ids
+    )
     cluster.assert_safety()
