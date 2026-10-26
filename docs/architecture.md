@@ -112,10 +112,17 @@ Expected lack of quorum or missing leader authority is liveness/incomplete evide
 not a safety failure. Campaign execution stops early only for
 `PaxosSafetyViolation`.
 
-The original Raft replay/artifact compatibility boundary remains unchanged. The next
-Paxos frontier is no longer another durable-state corner guard; it is cross-layer log
-consumption such as contiguous chosen-prefix application and client-visible state
-machine semantics. Real-network deployment remains a separate future project.
+`MultiPaxosStateMachine` consumes chosen Multi-Paxos slots. With opt-in
+`learn_decisions`, each node durably learns chosen slots from the leader. It applies
+them in contiguous slot order exactly once, keeps a durable applied prefix, and
+rebuilds volatile KV state by replay after a crash. Application fails closed on
+learned or applied evidence that has no durable quorum behind it.
+
+The original Raft replay/artifact compatibility boundary remains unchanged, and
+Multi-Paxos campaign artifacts are unaffected because learning is opt-in. The next
+Paxos frontier is client-visible semantics on top of the applied prefix and follower
+catch-up for missed decisions. Real-network deployment remains a separate future
+project.
 
 See `paxos.md` for the Phase 3 Paxos safety and replay boundaries.
 
