@@ -100,6 +100,50 @@ Exact replay requires all of those outputs to match. A run that loses quorum or
 attempts a proposal without active Phase-1 authority is `incomplete`, not a safety
 failure. Only `PaxosSafetyViolation` terminates a campaign as a correctness failure.
 
-This layer still does not provide ordered state-machine application, client semantics,
-membership changes, batching, or production networking. Those remain separate
-cross-layer milestones.
+## Ordered Multi-Paxos application
+
+`MultiPaxosCluster(..., learn_decisions=True)` adds the learner role: the leader
+that observes a Phase-2 quorum durably records the chosen slot and broadcasts a
+`LeaderDecision`. Each node keeps a durable, possibly gapped, learned-decision map.
+Decision envelopes must come from the member that owns the decision ballot. A
+conflicting decision for an already-learned slot raises `PaxosSafetyViolation`.
+Learning is off by default, so existing Multi-Paxos campaign traces, event budgets,
+and artifacts are byte-identical to the pre-application protocol.
+
+`MultiPaxosStateMachine` applies learned decisions to a small deterministic KV
+machine (`Put`/`Delete`, plus the non-idempotent `Append` so a double application
+is visible in state; any other chosen value is an ordered no-op):
+
+- `apply_ready(node)` applies slots `last_applied + 1, ...` while each is learned
+  and stops at the first gap (`multipaxos-apply-gap`). Later learned slots wait.
+- Each applied slot must match the node's durable learned decision and the cluster's
+  objective chosen evidence, so an unchosen or forged decision is never applied.
+- The applied prefix is durable and written in the same simulator step that applies
+  the slot. KV state is volatile and is rebuilt by replaying the durable prefix
+  after a crash or full reconstruction, so no slot is applied twice.
+- Reconstruction rejects applied histories that repeat or skip a slot, contain a
+  slot the node never durably learned, or apply a value without durable quorum
+  evidence. It also rejects learned decisions without durable quorum evidence and
+  in-memory state that diverges from the durable prefix.
+
+Leader handoff needs no special application logic: a higher-ballot leader adopts the
+chosen value through Phase 1, re-chooses it, and its decision fills gaps on followers.
+Followers compare applied slots by value, since the same value can be learned
+under different ballots.
+
+Limits: there is no follower catch-up protocol. A decision lost to a drop or a crash
+leaves a gap until a leader re-proposes that slot. Applied-prefix compaction and
+client request semantics are not implemented, and the Multi-Paxos campaign does not
+yet drive application.
+
+Ballot provenance is not validated. Applied and learned records are checked by slot
+and value only. Their `proposal` field is not compared with the node's learned ballot
+or with a ballot that formed the slot's durable quorum. A corrupted record that keeps
+the chosen value under a fabricated member ballot is therefore accepted on recovery.
+Applied state is unaffected, because application depends only on slot order and
+value, but the recorded provenance cannot be trusted. Proposed follow-up: require an
+applied record's ballot to equal the learned one, and a learned ballot to be a quorum
+ballot for that slot and value, each with a focused corruption test.
+
+This layer still does not provide client semantics, membership changes, batching,
+or production networking. Those remain separate cross-layer milestones.

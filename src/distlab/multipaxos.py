@@ -35,14 +35,35 @@ class LeaderAccepted:
     value: Any
 
 
-class MultiPaxosCluster:
-    """Stable-leader Multi-Paxos with one durable Phase-1 promise per ballot."""
+@dataclass(frozen=True, slots=True)
+class LeaderDecision:
+    slot: int
+    ballot: ProposalNumber
+    value: Any
 
-    def __init__(self, sim: Simulator, node_ids: tuple[str, ...]) -> None:
+
+class MultiPaxosCluster:
+    """Stable-leader Multi-Paxos with one durable Phase-1 promise per ballot.
+
+    With ``learn_decisions`` enabled, the leader that observes a Phase-2 quorum
+    durably learns the chosen slot and broadcasts a ``LeaderDecision`` so every
+    node keeps a durable, possibly gapped, learned-decision map for ordered
+    application. It is disabled by default so existing campaign traces and
+    event budgets stay byte-identical.
+    """
+
+    def __init__(
+        self,
+        sim: Simulator,
+        node_ids: tuple[str, ...],
+        *,
+        learn_decisions: bool = False,
+    ) -> None:
         if not node_ids or len(set(node_ids)) != len(node_ids):
             raise ValueError("Multi-Paxos requires unique non-empty node ids")
         self.sim = sim
         self.node_ids = node_ids
+        self.learn_decisions = learn_decisions
         self.nodes = {
             node_id: MultiPaxosNode(self, node_id, tuple(n for n in node_ids if n != node_id))
             for node_id in node_ids
@@ -89,6 +110,7 @@ class MultiPaxosCluster:
             )
 
     def _validate_durable_history(self, node: MultiPaxosNode) -> None:
+        node._validate_durable_learned()
         by_slot_ballot: dict[tuple[int, ProposalNumber], Any] = {}
         for accepted in node.accept_history:
             self._validate_durable_accepted(node, accepted)
@@ -151,6 +173,7 @@ class MultiPaxosCluster:
                 by_slot.setdefault(accepted.slot, []).append(
                     (accepted.proposal, accepted.value, node_id)
                 )
+        quorum_values: dict[int, Any] = {}
         for slot, records in by_slot.items():
             candidates: list[Any] = []
             for ballot, value, _ in records:
@@ -170,6 +193,18 @@ class MultiPaxosCluster:
                 raise PaxosSafetyViolation(
                     f"Multi-Paxos slot {slot} runtime/durable mismatch"
                 )
+            if candidates:
+                quorum_values[slot] = candidates[0]
+        for node_id, node in self.nodes.items():
+            for decision in node.learned_decisions:
+                if (
+                    decision.slot not in quorum_values
+                    or quorum_values[decision.slot] != decision.value
+                ):
+                    raise PaxosSafetyViolation(
+                        f"node {node_id!r} learned Multi-Paxos slot {decision.slot} "
+                        "without matching durable quorum evidence"
+                    )
 
 
 class MultiPaxosNode:
@@ -177,6 +212,7 @@ class MultiPaxosNode:
     _ACCEPTED = "multipaxos_accepted"
     _HISTORY = "multipaxos_accept_history"
     _LAST_ROUND = "multipaxos_last_round"
+    _LEARNED = "multipaxos_learned"
 
     def __init__(
         self,
@@ -193,6 +229,8 @@ class MultiPaxosNode:
         state.setdefault(self._ACCEPTED, {})
         state.setdefault(self._HISTORY, ())
         state.setdefault(self._LAST_ROUND, 0)
+        if cluster.learn_decisions:
+            state.setdefault(self._LEARNED, {})
         self._leader_ballot: ProposalNumber | None = None
         self._promises: dict[str, LeaderPromise] = {}
         self._pending: dict[int, Any] = {}
@@ -214,6 +252,17 @@ class MultiPaxosNode:
         value = self.sim.persistent_state[self.node_id][self._HISTORY]
         assert isinstance(value, tuple)
         return value
+
+    @property
+    def learned_decisions(self) -> tuple[SlotLearnedDecision, ...]:
+        learned = self.sim.persistent_state[self.node_id].get(self._LEARNED, {})
+        assert isinstance(learned, dict)
+        return tuple(learned[slot] for slot in sorted(learned))
+
+    def learned_decision(self, slot: int) -> SlotLearnedDecision | None:
+        learned = self.sim.persistent_state[self.node_id].get(self._LEARNED, {})
+        assert isinstance(learned, dict)
+        return learned.get(slot)
 
     @property
     def has_leader_authority(self) -> bool:
@@ -312,6 +361,13 @@ class MultiPaxosNode:
             if message.src != payload.acceptor_id:
                 return
             self._receive_accepted(payload)
+        elif isinstance(payload, LeaderDecision):
+            if (
+                message.src != payload.ballot.proposer_id
+                or payload.ballot.proposer_id not in self.cluster.nodes
+            ):
+                return
+            self._receive_decision(payload)
         else:
             raise TypeError(f"unsupported Multi-Paxos message {type(payload).__name__}")
 
@@ -415,6 +471,70 @@ class MultiPaxosNode:
             self.cluster._record_chosen(response.slot, response.ballot, response.value)
             self._pending.pop(response.slot, None)
             self._accepted_by.pop(response.slot, None)
+            if self.cluster.learn_decisions:
+                decision = LeaderDecision(response.slot, response.ballot, response.value)
+                self._receive_decision(decision)
+                for peer in self.peers:
+                    self.sim.send(self.node_id, peer, decision)
+
+    def _receive_decision(self, decision: LeaderDecision) -> None:
+        learned = self.sim.persistent_state[self.node_id].get(self._LEARNED)
+        if decision.slot <= 0 or learned is None:
+            self.sim._record(
+                "multipaxos-decision-ignored",
+                node=self.node_id,
+                slot=decision.slot,
+                ballot=decision.ballot,
+            )
+            return
+        current = learned.get(decision.slot)
+        if current is not None:
+            if current.value != decision.value:
+                raise PaxosSafetyViolation(
+                    f"Multi-Paxos learner {self.node_id!r} observed conflicting "
+                    f"decisions for slot {decision.slot}"
+                )
+            self.sim._record(
+                "multipaxos-decision-duplicate",
+                node=self.node_id,
+                slot=decision.slot,
+                ballot=decision.ballot,
+            )
+            return
+        learned[decision.slot] = SlotLearnedDecision(
+            decision.slot, decision.ballot, decision.value
+        )
+        self.sim._record(
+            "multipaxos-learned",
+            node=self.node_id,
+            slot=decision.slot,
+            ballot=decision.ballot,
+            value=decision.value,
+        )
+
+    def _validate_durable_learned(self) -> None:
+        state = self.sim.persistent_state[self.node_id]
+        if self._LEARNED not in state:
+            return
+        learned = state[self._LEARNED]
+        if not isinstance(learned, dict):
+            raise PaxosSafetyViolation("Multi-Paxos durable learned decisions are invalid")
+        for slot, decision in learned.items():
+            if (
+                not isinstance(slot, int)
+                or isinstance(slot, bool)
+                or slot <= 0
+                or not isinstance(decision, SlotLearnedDecision)
+                or decision.slot != slot
+            ):
+                raise PaxosSafetyViolation(
+                    f"Multi-Paxos durable learned decision for slot {slot!r} is invalid"
+                )
+            if decision.proposal.proposer_id not in self.cluster.nodes:
+                raise PaxosSafetyViolation(
+                    "Multi-Paxos durable learned decision has non-member proposer "
+                    f"{decision.proposal.proposer_id!r}"
+                )
 
     def handle_crash(self, sim: Simulator) -> None:
         if sim is not self.sim:
