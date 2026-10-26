@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
@@ -10,12 +11,26 @@ from .paxos import PaxosError, PaxosSafetyViolation
 from .paxos_log import SlotLearnedDecision
 
 
+@dataclass(frozen=True, slots=True)
+class Append:
+    """Non-idempotent command: applying it twice is visible in the KV state."""
+
+    key: str
+    suffix: str
+
+    def __post_init__(self) -> None:
+        if not self.key:
+            raise ValueError("KV key must be non-empty")
+
+
 def apply_multipaxos_command(state: dict[str, str], value: Any) -> None:
     """Deterministic KV transition; any other chosen value is an ordered no-op."""
     if isinstance(value, Put):
         state[value.key] = value.value
     elif isinstance(value, Delete):
         state.pop(value.key, None)
+    elif isinstance(value, Append):
+        state[value.key] = state.get(value.key, "") + value.suffix
 
 
 class MultiPaxosStateMachine:

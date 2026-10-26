@@ -5,7 +5,7 @@ import pytest
 
 from distlab.kv import Delete, Put
 from distlab.multipaxos import LeaderDecision, MultiPaxosCluster
-from distlab.multipaxos_state_machine import MultiPaxosStateMachine
+from distlab.multipaxos_state_machine import Append, MultiPaxosStateMachine
 from distlab.paxos import PaxosError, PaxosSafetyViolation, ProposalNumber
 from distlab.paxos_log import SlotLearnedDecision
 from distlab.simulator import FaultAction, FaultPlan, FaultRule, Simulator
@@ -191,14 +191,15 @@ def test_duplicate_decision_deliveries_apply_each_slot_once() -> None:
     sim, cluster, machine = _cluster(FaultPlan((duplicate,)))
     leader = cluster.node("n1")
     _lead(sim, cluster)
-    leader.propose(1, Put("k", "a"))
-    leader.propose(2, Put("k", "b"))
+    leader.propose(1, Append("k", "a"))
+    leader.propose(2, Append("k", "b"))
 
     # Apply after the originals land, then let every duplicate arrive.
     while any(cluster.node(n).learned_decision(2) is None for n in NODES):
         assert sim.run(max_events=1) == 1
     for node_id in NODES:
         assert [decision.slot for decision in machine.apply_ready(node_id)] == [1, 2]
+        assert dict(machine.state(node_id)) == {"k": "ab"}
     sim.run()
 
     duplicates = [r for r in sim.trace if r.kind == "multipaxos-decision-duplicate"]
@@ -213,7 +214,8 @@ def test_duplicate_decision_deliveries_apply_each_slot_once() -> None:
         assert machine.apply_ready(node_id) == ()
         assert machine.last_applied(node_id) == 2
         assert _applied_trace(sim, node_id) == [1, 2]
-        assert dict(machine.state(node_id)) == {"k": "b"}
+        # Append is non-idempotent: any second application would show as "aabb".
+        assert dict(machine.state(node_id)) == {"k": "ab"}
     machine.assert_safety()
 
 
@@ -259,11 +261,12 @@ def test_crash_after_application_rebuilds_state_without_reapplying() -> None:
     sim, cluster, machine = _cluster()
     leader = cluster.node("n1")
     _lead(sim, cluster)
-    leader.propose(1, Put("k", "a"))
-    leader.propose(2, Put("j", "b"))
+    leader.propose(1, Append("k", "a"))
+    leader.propose(2, Append("k", "b"))
     sim.run()
     assert len(machine.apply_ready("n2")) == 2
     before = dict(machine.state("n2"))
+    assert before == {"k": "ab"}
 
     sim.crash("n2")
     assert "multipaxos_state_machine" not in sim.volatile_state["n2"]
@@ -278,12 +281,13 @@ def test_crash_after_application_rebuilds_state_without_reapplying() -> None:
     ]
     assert loads[-1] == {"node": "n2", "last_applied": 2}
     assert machine.apply_ready("n2") == ()
+    assert dict(machine.state("n2")) == {"k": "ab"}
 
-    leader.propose(3, Delete("k"))
+    leader.propose(3, Append("k", "c"))
     sim.run()
     assert [decision.slot for decision in machine.apply_ready("n2")] == [3]
     assert _applied_trace(sim, "n2") == [1, 2, 3]
-    assert dict(machine.state("n2")) == {"j": "b"}
+    assert dict(machine.state("n2")) == {"k": "abc"}
     machine.assert_safety()
 
 
@@ -291,8 +295,8 @@ def test_full_reconstruction_recovers_applied_prefix_and_continues() -> None:
     sim, cluster, machine = _cluster()
     leader = cluster.node("n1")
     _lead(sim, cluster)
-    leader.propose(1, Put("k", "a"))
-    leader.propose(2, Put("j", "b"))
+    leader.propose(1, Append("k", "a"))
+    leader.propose(2, Append("k", "b"))
     sim.run()
     machine.apply_ready("n1")
     machine.apply_ready("n2")
@@ -302,18 +306,21 @@ def test_full_reconstruction_recovers_applied_prefix_and_continues() -> None:
 
     for node_id in ("n1", "n2"):
         assert recovered_machine.applied(node_id) == machine.applied(node_id)
-        assert dict(recovered_machine.state(node_id)) == dict(machine.state(node_id))
+        assert dict(recovered_machine.state(node_id)) == {"k": "ab"}
+        assert recovered_machine.apply_ready(node_id) == ()
+        assert dict(recovered_machine.state(node_id)) == {"k": "ab"}
     assert recovered_machine.last_applied("n3") == 0
     assert [d.slot for d in recovered_machine.apply_ready("n3")] == [1, 2]
+    assert dict(recovered_machine.state("n3")) == {"k": "ab"}
 
     new_leader = recovered.node("n2")
     new_leader.prepare_leadership()
     recovered_sim.run()
-    new_leader.propose(3, Put("k", "c"))
+    new_leader.propose(3, Append("k", "c"))
     recovered_sim.run()
     for node_id in NODES:
         assert recovered_machine.apply_ready(node_id)[-1].slot == 3
-        assert dict(recovered_machine.state(node_id)) == {"k": "c", "j": "b"}
+        assert dict(recovered_machine.state(node_id)) == {"k": "abc"}
     recovered_machine.assert_safety()
 
 
@@ -321,12 +328,12 @@ def test_leader_handoff_preserves_applied_prefix_and_fills_follower_gap() -> Non
     sim, cluster, machine = _cluster()
     old = cluster.node("n1")
     old_ballot = _lead(sim, cluster)
-    old.propose(1, Put("k", "a"))
+    old.propose(1, Append("k", "a"))
     sim.run()
     sim.block_link("n1", "n3")
-    old.propose(2, Put("k", "b"))
+    old.propose(2, Append("k", "b"))
     sim.run()
-    assert cluster.chosen(2).value == Put("k", "b")
+    assert cluster.chosen(2).value == Append("k", "b")
     assert [d.slot for d in machine.apply_ready("n1")] == [1, 2]
     assert [d.slot for d in machine.apply_ready("n3")] == [1]
 
@@ -335,11 +342,11 @@ def test_leader_handoff_preserves_applied_prefix_and_fills_follower_gap() -> Non
     new = cluster.node("n2")
     new_ballot = _lead(sim, cluster, "n2")
     assert new_ballot > old_ballot
-    new.propose(2, Put("k", "hijack"))  # Phase 1 must adopt the chosen value.
-    new.propose(3, Put("x", "y"))
+    new.propose(2, Append("k", "hijack"))  # Phase 1 must adopt the chosen value.
+    new.propose(3, Append("k", "c"))
     sim.run()
 
-    assert cluster.node("n3").learned_decision(2).value == Put("k", "b")
+    assert cluster.node("n3").learned_decision(2).value == Append("k", "b")
     assert cluster.node("n3").learned_decision(2).proposal == new_ballot
     assert [d.slot for d in machine.apply_ready("n3")] == [2, 3]
     assert [d.slot for d in machine.apply_ready("n2")] == [1, 2, 3]
@@ -347,9 +354,11 @@ def test_leader_handoff_preserves_applied_prefix_and_fills_follower_gap() -> Non
     sim.restart("n1")
     assert machine.last_applied("n1") == 2
     assert machine.apply_ready("n1") == ()
-    assert dict(machine.state("n1")) == {"k": "b"}
+    # n3 learned slot 2 only at the new ballot after n1 applied it at the old one;
+    # every node still holds exactly one "b".
+    assert dict(machine.state("n1")) == {"k": "ab"}
     for node_id in ("n2", "n3"):
-        assert dict(machine.state(node_id)) == {"k": "b", "x": "y"}
+        assert dict(machine.state(node_id)) == {"k": "abc"}
     assert sum(r.kind == "multipaxos-phase1-start" for r in sim.trace) == 2
     machine.assert_safety()
 
@@ -489,6 +498,27 @@ def test_safety_check_rejects_durable_prefix_changed_after_application() -> None
         machine.assert_safety()
     with pytest.raises(PaxosSafetyViolation, match="diverged from its durable applied"):
         machine.apply_ready("n2")
+
+
+def test_safety_check_rejects_volatile_kv_content_divergence() -> None:
+    sim, cluster, machine = _cluster()
+    leader = cluster.node("n1")
+    _lead(sim, cluster)
+    leader.propose(1, Append("k", "a"))
+    leader.propose(2, Append("k", "b"))
+    sim.run()
+    machine.apply_ready("n2")
+    assert dict(machine.state("n2")) == {"k": "ab"}
+    machine.assert_safety()
+
+    volatile = sim.volatile_state["n2"]["multipaxos_state_machine"]
+    volatile["kv"]["k"] = "aab"
+    assert volatile["applied_through"] == machine.last_applied("n2") == 2
+    with pytest.raises(
+        PaxosSafetyViolation,
+        match="state machine for 'n2' diverged from its durable applied prefix",
+    ):
+        machine.assert_safety()
 
 
 def _faulted_scenario() -> tuple[list, dict[str, tuple], dict[str, dict[str, str]], Simulator]:

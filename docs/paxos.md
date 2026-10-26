@@ -111,7 +111,8 @@ Learning is off by default, so existing Multi-Paxos campaign traces, event budge
 and artifacts are byte-identical to the pre-application protocol.
 
 `MultiPaxosStateMachine` applies learned decisions to a small deterministic KV
-machine (`Put`/`Delete`; any other chosen value is an ordered no-op):
+machine (`Put`/`Delete`, plus the non-idempotent `Append` so a double application
+is visible in state; any other chosen value is an ordered no-op):
 
 - `apply_ready(node)` applies slots `last_applied + 1, ...` while each is learned
   and stops at the first gap (`multipaxos-apply-gap`). Later learned slots wait.
@@ -134,6 +135,15 @@ Limits: there is no follower catch-up protocol. A decision lost to a drop or a c
 leaves a gap until a leader re-proposes that slot. Applied-prefix compaction and
 client request semantics are not implemented, and the Multi-Paxos campaign does not
 yet drive application.
+
+Ballot provenance is not validated. Applied and learned records are checked by slot
+and value only. Their `proposal` field is not compared with the node's learned ballot
+or with a ballot that formed the slot's durable quorum. A corrupted record that keeps
+the chosen value under a fabricated member ballot is therefore accepted on recovery.
+Applied state is unaffected, because application depends only on slot order and
+value, but the recorded provenance cannot be trusted. Proposed follow-up: require an
+applied record's ballot to equal the learned one, and a learned ballot to be a quorum
+ballot for that slot and value, each with a focused corruption test.
 
 This layer still does not provide client semantics, membership changes, batching,
 or production networking. Those remain separate cross-layer milestones.
