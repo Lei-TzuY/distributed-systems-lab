@@ -347,15 +347,16 @@ def test_leader_handoff_preserves_applied_prefix_and_fills_follower_gap() -> Non
     sim.run()
 
     assert cluster.node("n3").learned_decision(2).value == Append("k", "b")
-    assert cluster.node("n3").learned_decision(2).proposal == new_ballot
+    # The application pass requested catch-up; n2 supplies its durable old-ballot
+    # decision during Phase 1, before the new leader re-proposes the slot.
+    assert cluster.node("n3").learned_decision(2).proposal == old_ballot
     assert [d.slot for d in machine.apply_ready("n3")] == [2, 3]
     assert [d.slot for d in machine.apply_ready("n2")] == [1, 2, 3]
 
     sim.restart("n1")
     assert machine.last_applied("n1") == 2
     assert machine.apply_ready("n1") == ()
-    # n3 learned slot 2 only at the new ballot after n1 applied it at the old one;
-    # every node still holds exactly one "b".
+    # Recovery and re-proposal both delivered slot 2; every node still holds one "b".
     assert dict(machine.state("n1")) == {"k": "ab"}
     for node_id in ("n2", "n3"):
         assert dict(machine.state(node_id)) == {"k": "abc"}
@@ -582,8 +583,9 @@ def test_every_proposal_order_applies_only_a_growing_contiguous_prefix(order) ->
     sim.crash("n3")
 
     progress = dict.fromkeys(NODES, 0)
-    step = 0
-    while True:
+    # Application passes now initiate bounded recovery episodes. Bound the driver
+    # as well: continuously polling an unknown tail intentionally retries it.
+    for step in range(256):
         for node_id in NODES:
             if sim.is_alive(node_id):
                 machine.apply_ready(node_id)
@@ -591,17 +593,19 @@ def test_every_proposal_order_applies_only_a_growing_contiguous_prefix(order) ->
             assert [d.slot for d in applied] == list(range(1, len(applied) + 1))
             assert len(applied) >= progress[node_id]
             progress[node_id] = len(applied)
-        step += 1
-        if step == 5:
+        if step == 4:
             sim.restart("n3")
-        if sim.run(max_events=1) == 0:
+        if all(machine.last_applied(node_id) == 4 for node_id in NODES):
             break
+        sim.run(max_events=1)
+    else:
+        pytest.fail("bounded application/recovery driver did not converge")
 
-    for node_id in ("n1", "n2"):
+    for node_id in NODES:
         assert machine.last_applied(node_id) == 4
         assert dict(machine.state(node_id)) == {"k": "4"}
         assert _applied_trace(sim, node_id) == [1, 2, 3, 4]
-    # n3 missed decisions while crashed: it applies exactly its contiguous learned prefix.
+    # n3 recovers decisions missed while crashed without skipping its learned prefix.
     learned = {d.slot for d in cluster.node("n3").learned_decisions}
     contiguous = 0
     while contiguous + 1 in learned:
