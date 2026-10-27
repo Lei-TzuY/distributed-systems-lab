@@ -76,6 +76,7 @@ from .multipaxos_campaign import (
     SeededMultiPaxosActionSchedule,
     SeededMultiPaxosCampaign,
 )
+from .multipaxos_state_machine import MultiPaxosStateMachine
 from .paxos import (
     Accepted,
     AcceptedValue,
@@ -244,6 +245,7 @@ __all__ = [
     "MultiPaxosScenarioOutcome",
     "MultiPaxosScenarioResult",
     "MultiPaxosScenarioRunner",
+    "MultiPaxosStateMachine",
     "MultiPaxosTrialArtifact",
     "NodeLifecycleAction",
     "NodeLifecycleKind",
