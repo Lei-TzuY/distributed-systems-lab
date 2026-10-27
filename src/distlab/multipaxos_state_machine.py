@@ -78,7 +78,11 @@ class MultiPaxosStateMachine:
         return MappingProxyType(dict(self._machine(node_id)["kv"]))
 
     def apply_ready(self, node_id: str) -> tuple[SlotLearnedDecision, ...]:
-        """Apply every newly learned contiguous slot after the durable prefix."""
+        """Apply the contiguous prefix, then probe/retry the first unlearned window.
+
+        The application driver keeps calling this and processing simulator work.
+        A probe also discovers a lost suffix when no later slot was learned yet.
+        """
         self._require_alive(node_id)
         machine = self._machine(node_id)
         node = self.cluster.node(node_id)
@@ -111,6 +115,7 @@ class MultiPaxosStateMachine:
                     if decision.slot > gap
                 ),
             )
+        node.recover_decisions(len(applied) + 1)
         return tuple(applied_now)
 
     @staticmethod

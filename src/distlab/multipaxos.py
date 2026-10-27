@@ -42,6 +42,32 @@ class LeaderDecision:
     value: Any
 
 
+RECOVERY_WINDOW = 16
+RECOVERY_ATTEMPTS = 3
+RECOVERY_RETRY_DELAY = 4  # Simulator ticks, never wall-clock time.
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionRecoveryRequest:
+    start_slot: int
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionRecoveryResponse:
+    start_slot: int
+    decisions: tuple[SlotLearnedDecision, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _DecisionRecoveryRetry:
+    generation: int
+    attempt: int
+
+
+def _valid_slot(slot: object) -> bool:
+    return isinstance(slot, int) and not isinstance(slot, bool) and slot > 0
+
+
 class MultiPaxosCluster:
     """Stable-leader Multi-Paxos with one durable Phase-1 promise per ballot.
 
@@ -90,6 +116,24 @@ class MultiPaxosCluster:
 
     def chosen_slots(self) -> tuple[SlotLearnedDecision, ...]:
         return tuple(self._chosen[slot] for slot in sorted(self._chosen))
+
+    def _require_recovery_evidence(self, decision: SlotLearnedDecision) -> None:
+        # This is a harness safety check, not a source of peer-local decisions.
+        # In particular, an accepted minority or a peer's claim is insufficient.
+        acceptors = {
+            node_id
+            for node_id, node in self.nodes.items()
+            if any(
+                accepted.slot == decision.slot
+                and accepted.proposal == decision.proposal
+                and accepted.value == decision.value
+                for accepted in node.accept_history
+            )
+        }
+        if len(acceptors) < self.quorum_size:
+            raise PaxosSafetyViolation(
+                f"Multi-Paxos recovery slot {decision.slot} lacks matching durable quorum evidence"
+            )
 
     def _validate_durable_accepted(
         self, node: MultiPaxosNode, accepted: SlotAcceptedValue
@@ -235,6 +279,9 @@ class MultiPaxosNode:
         self._promises: dict[str, LeaderPromise] = {}
         self._pending: dict[int, Any] = {}
         self._accepted_by: dict[int, set[str]] = {}
+        self._recovery: DecisionRecoveryRequest | None = None
+        self._recovery_generation = 0
+        self._recovery_attempt = 0
 
     @property
     def promised_ballot(self) -> ProposalNumber | None:
@@ -263,6 +310,59 @@ class MultiPaxosNode:
         learned = self.sim.persistent_state[self.node_id].get(self._LEARNED, {})
         assert isinstance(learned, dict)
         return learned.get(slot)
+
+    def recover_decisions(self, start_slot: int) -> None:
+        """Probe one bounded window, retrying at most three times this episode.
+
+        Normal application passes call this at the first unlearned slot, including
+        the unknown tail. Repeated passes coalesce while an episode is active and
+        can start another after exhaustion. No request state needs to be durable.
+        """
+        if not _valid_slot(start_slot):
+            raise ValueError("recovery start slot must be a positive integer")
+        if not self.cluster.learn_decisions or not self.peers:
+            return
+        if not self.sim.is_alive(self.node_id):
+            raise PaxosError("crashed node cannot recover Multi-Paxos decisions")
+        request = DecisionRecoveryRequest(start_slot)
+        if self._recovery == request:
+            return
+        self._recovery_generation += 1
+        self._recovery_attempt = 0
+        self._recovery = request
+        self._retry_recovery()
+
+    def _retry_recovery(self) -> None:
+        request = self._recovery
+        if request is None:
+            return
+        if self.learned_decision(request.start_slot) is not None:
+            self._recovery = None
+            return
+        if self._recovery_attempt == RECOVERY_ATTEMPTS:
+            self._recovery = None
+            self.sim._record(
+                "multipaxos-recovery-exhausted",
+                node=self.node_id,
+                start_slot=request.start_slot,
+                attempts=self._recovery_attempt,
+                known_gap=any(d.slot > request.start_slot for d in self.learned_decisions),
+            )
+            return
+        self._recovery_attempt += 1
+        for peer in sorted(self.peers):
+            self.sim.send(self.node_id, peer, request)
+        # Like other simulator-local timers, retry work is not a network packet.
+        # Requests and responses above/below use the fault-injected transport.
+        self.sim._schedule(
+            Message(
+                self.node_id,
+                self.node_id,
+                _DecisionRecoveryRetry(self._recovery_generation, self._recovery_attempt),
+                ordinal=0,
+            ),
+            RECOVERY_RETRY_DELAY,
+        )
 
     @property
     def has_leader_authority(self) -> bool:
@@ -368,8 +468,71 @@ class MultiPaxosNode:
             ):
                 return
             self._receive_decision(payload)
+        elif isinstance(payload, (DecisionRecoveryRequest, DecisionRecoveryResponse)):
+            if not self.cluster.learn_decisions or message.src not in self.peers:
+                return
+            if isinstance(payload, DecisionRecoveryRequest):
+                self._receive_recovery_request(message.src, payload)
+            else:
+                self._receive_recovery_response(payload)
+        elif isinstance(payload, _DecisionRecoveryRetry):
+            if (
+                message.src == self.node_id
+                and payload.generation == self._recovery_generation
+                and payload.attempt == self._recovery_attempt
+            ):
+                self._retry_recovery()
         else:
             raise TypeError(f"unsupported Multi-Paxos message {type(payload).__name__}")
+
+    def _receive_recovery_request(self, requester: str, request: DecisionRecoveryRequest) -> None:
+        if not _valid_slot(request.start_slot):
+            return
+        # Only this peer's durable learned records may populate the response.
+        # Never use cluster.chosen() or another node's state to fill the window.
+        decisions = tuple(
+            decision
+            for slot in range(request.start_slot, request.start_slot + RECOVERY_WINDOW)
+            if (decision := self.learned_decision(slot)) is not None
+        )
+        for decision in decisions:
+            self.cluster._require_recovery_evidence(decision)
+        self.sim.send(
+            self.node_id, requester, DecisionRecoveryResponse(request.start_slot, decisions)
+        )
+
+    def _receive_recovery_response(self, response: DecisionRecoveryResponse) -> None:
+        if (
+            not _valid_slot(response.start_slot)
+            or not isinstance(response.decisions, tuple)
+            or len(response.decisions) > RECOVERY_WINDOW
+        ):
+            return
+        previous = response.start_slot - 1
+        for decision in response.decisions:
+            if (
+                not isinstance(decision, SlotLearnedDecision)
+                or not _valid_slot(decision.slot)
+                or not previous < decision.slot < response.start_slot + RECOVERY_WINDOW
+                or not isinstance(decision.proposal, ProposalNumber)
+                or not _valid_slot(decision.proposal.round)
+                or decision.proposal.proposer_id not in (*self.peers, self.node_id)
+            ):
+                return
+            previous = decision.slot
+        # Validate the entire response before writing any learned record. Delayed
+        # responses need no live request or current leader ballot to remain valid.
+        for decision in response.decisions:
+            current = self.learned_decision(decision.slot)
+            if current is not None and current.value != decision.value:
+                raise PaxosSafetyViolation(
+                    f"Multi-Paxos recovery observed conflicting decisions for slot {decision.slot}"
+                )
+            self.cluster._require_recovery_evidence(decision)
+        for decision in response.decisions:
+            self._receive_decision(
+                LeaderDecision(decision.slot, decision.proposal, decision.value)
+            )
 
     def _receive_prepare(self, request: LeaderPrepare) -> None:
         promised = self.promised_ballot
@@ -543,6 +706,9 @@ class MultiPaxosNode:
         self._promises.clear()
         self._pending.clear()
         self._accepted_by.clear()
+        self._recovery = None
+        self._recovery_generation += 1
+        self._recovery_attempt = 0
 
     def handle_restart(self, sim: Simulator) -> None:
         self.handle_crash(sim)
