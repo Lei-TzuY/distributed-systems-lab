@@ -202,8 +202,8 @@ test mutant that trusts a peer claim is caught by the application safety invaria
 Learning remains disabled by default: no recovery work, durable state, or messages are
 added to existing learner-disabled campaign traces or replay artifacts.
 
-Applied-prefix compaction and client request semantics are not implemented, and
-the existing Multi-Paxos campaign runner does not yet drive application. Recovery
+Applied-prefix compaction is not implemented, and the existing Multi-Paxos
+campaign runner does not yet drive application. Recovery
 fault campaigns live in the focused tests; its existing artifact format is unchanged.
 
 Ordinary decision/application ballot provenance is not validated. Applied and learned
@@ -218,5 +218,123 @@ ballot for that slot and value, each with a focused corruption test. Recovery me
 do require the stated ballot to have durable quorum evidence; this does not repair
 pre-existing ordinary learned or applied provenance.
 
-This layer still does not provide client semantics, membership changes, batching,
-or production networking. Those remain separate cross-layer milestones.
+## Multi-Paxos client-visible KV
+
+`MultiPaxosClient` is a small simulator adapter over the existing protocol and
+`MultiPaxosStateMachine`, with `learn_decisions=True`. It accepts the existing
+`Put`/`Delete`/`Get` operation types:
+
+```python
+from distlab.kv import Put
+from distlab.linearizability import Get
+from distlab.multipaxos_client import ClientStatus, MultiPaxosClient
+from distlab.multipaxos_state_machine import MultiPaxosRequest
+
+client = MultiPaxosClient(machine)  # The cluster already has Phase-1 leadership.
+write = MultiPaxosRequest("A", 1, "A-put-1", Put("k", "v"))
+written = client.execute("n1", write)
+read = MultiPaxosRequest("B", 1, "B-get-1", Get("k"))
+answer = client.execute("n1", read)
+# Check answer.status == ClientStatus.COMPLETED before using answer.value.
+```
+
+Every `(client_id, request_id)` represents one immutable request, including its
+`operation_id`. Retrying the same request uses `submit` or `execute` again and
+does not add another invocation to the client journal's `OperationHistory`.
+Reusing the request identity with different contents, changing its history ID,
+or reusing a history ID for another request is a conflict. Malformed request
+IDs/operations raise validation errors before submission. This API does not
+impose Raft's monotonic request sequencing or single-flight session policy.
+
+### Durable deduplication and reads
+
+The request envelope itself is a chosen log value. During ordered application,
+the first occurrence records `(request, first_slot, result)` in the volatile
+projection. Later identical occurrences consume their log slots but do not
+execute the operation again. Conflicting occurrences raise
+`ClientRequestConflict` before modifying KV or advancing the offending applied
+slot. Existing unwrapped Put/Delete/Append/None behavior is preserved.
+
+There is no separately trusted durable dedup table: the existing durable applied
+prefix is the source of KV, identities, and results. Crash/restart or a new
+Simulator/cluster/state machine deterministically replays that prefix. Get is a
+no-write log command; it captures the value exactly when its first slot applies,
+and replay recovers that same result. A duplicate Get after later writes returns
+the original value, including an original missing-key `None` result.
+
+`Append` may also be wrapped to exercise non-idempotent exactly-once effects.
+It is intentionally excluded from OperationHistory, whose checker supports only
+Put/Delete/Get. The tests also interleave writes before replaying a duplicate Put,
+so idempotence cannot hide a missing deduplication check.
+
+### Submission, acknowledgement, and takeover
+
+`submit` only proposes/retransmits. `poll` observes the exact registered request;
+by default it applies ready decisions and acknowledges a matching applied
+record. `poll(apply=False)` exposes the learning/application gap, and
+`poll(acknowledge=False)` models application with a lost acknowledgement.
+
+| Status | Meaning |
+| --- | --- |
+| submitted | A proposal was issued; neither choice nor application is implied. |
+| pending | Matching completion evidence is not yet available. |
+| chosen_not_applied | The local learner knows this request, but a prefix gap may block it. |
+| applied_not_acknowledged | Matching durable application exists; no history response was published. |
+| completed | Matching application evidence and a client response exist. |
+| conflict | An identity was reused with incompatible contents. |
+| leadership_unavailable | The node is crashed, lacks Phase-1 quorum authority, has a newer local promise, or fails the caller's ballot fence. |
+| quorum_unavailable | The finite execution budget expired without a matching learned/applied result; the request remains unresolved. |
+
+Success never follows merely from `propose()` or from completion of a proposed
+slot. The applied request must match all identity/content fields. If Phase 1
+adopts B in the slot where a caller hinted A, A remains pending and a retry can
+place A in another slot. `expected_ballot` on `poll` fences a stale submission
+ticket. Current local Phase-1 authority is required before publishing a response;
+a delayed old-leader call cannot bypass that gate using a slot number.
+Results distinguish `ballot` (the applied decision's evidence, or the submission
+ballot before application) from `authority_ballot` (the responder's current live
+Phase-1 ballot). After takeover, a valid response can cite an older applied
+decision while being authorized by the new leader's ballot.
+
+New requests use a slot after the highest locally known accepted/learned slot,
+including records transported in Phase-1 promises. This is essential for a new
+leader's Get: a previously completed write may be absent from its own KV and log
+but present in its promise quorum. The driver repairs earlier slots through
+ordinary Phase 2, adopting highest accepted records (including accepted None).
+Only a genuinely unaccepted hole receives a no-op. Existing chosen-gap recovery
+continues to use peer-local durable decisions. No global chosen map supplies a
+placement, authority decision, request payload, or read result; its existing use
+inside application/quorum safety validation remains unchanged.
+
+### Bounded execution and recovery contract
+
+`execute` defaults to eight rounds, at most 64 queued events and 16 prefix repair
+slots per round. It returns an observable status when this budget is exhausted;
+`quorum_unavailable` does not prove failure or non-choice. Exact retry is required
+when a delayed result is unknown. Larger gaps may need more rounds or later calls.
+The adapter does not elect a leader, implement leases, or guarantee completion
+under permanent partition/loss or continued leader changes.
+
+The `ClientJournal` belongs to the client and retains request/history identities,
+including incomplete reads. Retain it (or a deepcopy) when rebuilding the server
+runtime to preserve the same history. Server dedup/results always reconstruct
+from server applied decisions and never trust the journal as completion evidence.
+Loss of the client's own journal does not undo server deduplication, but cannot
+recreate client invocations that were never decided. Client state is not a
+production persistence/RPC format.
+
+The existing single-key checker evaluates completed histories. The test scenarios
+resolve lost-acknowledgement writes by exact retry before checking reads that
+observe those writes, and also retain genuinely unchosen incomplete operations.
+The checker does not synthesize completion extensions for pending writes whose
+effects were observed; that pre-existing evidence-tool limitation is unchanged.
+
+Run `python -m distlab.multipaxos_demo` for concrete slot/ballot/request/status,
+chosen/applied, replica KV/dedup, and linearizability evidence. It exercises two
+clients, lost acknowledgement, leader crash/takeover, follower catch-up, a duplicate
+request after an interleaved write, and full reconstruction. Tests additionally
+replay three fixed-seed fault schedules, cover three-window prefix repair, and
+deliberately mutate dedup/read-result handling to verify the safety detectors.
+
+Membership changes, compaction, batching, and production networking remain outside
+this client milestone.

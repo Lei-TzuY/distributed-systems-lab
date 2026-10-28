@@ -119,10 +119,22 @@ rebuilds volatile KV state by replay after a crash. Application fails closed on
 learned or applied evidence that has no durable quorum behind it.
 
 The original Raft replay/artifact compatibility boundary remains unchanged, and
-Multi-Paxos campaign artifacts are unaffected because learning is opt-in. The next
-Paxos frontier is client-visible semantics on top of the applied prefix and follower
-catch-up for missed decisions. Real-network deployment remains a separate future
-project.
+Multi-Paxos campaign artifacts are unaffected because learning is opt-in. The
+Paxos client layer now builds on that prefix and bounded follower catch-up.
+`MultiPaxosRequest` binds a stable client/request/history identity to Put, Delete,
+or Get. The state machine reconstructs deduplication and first-application results
+from its durable applied decisions. Get captures its value at its ordered log
+position; duplicate request records in other slots do not execute again.
+
+`MultiPaxosClient` uses local Phase-1 promise evidence to place new requests after
+known accepted slots, and uses matching local applied records to acknowledge
+them. Its bounded driver retransmits existing Phase-2 requests, recovers chosen
+gaps, and fills unaccepted holes with legally proposed no-ops. It does not borrow
+Raft commit indices or leader generations. The objective global quorum checks
+remain safety-harness validation, never the source of a client response or peer
+decision payload. The client-owned journal preserves one invocation/completion
+across retries and server reconstruction. Real-network deployment remains a
+separate future project.
 
 See `paxos.md` for the Phase 3 Paxos safety and replay boundaries.
 
