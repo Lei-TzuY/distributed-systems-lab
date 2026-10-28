@@ -402,7 +402,7 @@ class MultiPaxosNode:
         if slot in self._pending:
             raise PaxosError(f"slot {slot} already has an active proposal")
         adopted = self._adopted_value(slot)
-        chosen_value = value if adopted is None else adopted
+        chosen_value = value if adopted is None else adopted.value
         self._pending[slot] = chosen_value
         self._accepted_by[slot] = set()
         request = LeaderAccept(slot, self._leader_ballot, chosen_value)
@@ -417,7 +417,8 @@ class MultiPaxosNode:
             value=chosen_value,
         )
 
-    def _adopted_value(self, slot: int) -> Any | None:
+    def _adopted_value(self, slot: int) -> SlotAcceptedValue | None:
+        """Return the accepted record so a null payload still counts as evidence."""
         accepted = [
             item
             for promise in self._promises.values()
@@ -426,14 +427,14 @@ class MultiPaxosNode:
         ]
         if not accepted:
             return None
-        highest = max(item.proposal for item in accepted)
-        values = [item.value for item in accepted if item.proposal == highest]
+        highest = max(accepted, key=lambda item: item.proposal)
+        values = [item.value for item in accepted if item.proposal == highest.proposal]
         first = values[0]
         if any(value != first for value in values[1:]):
             raise PaxosSafetyViolation(
-                f"slot {slot} has conflicting accepted values at {highest!r}"
+                f"slot {slot} has conflicting accepted values at {highest.proposal!r}"
             )
-        return first
+        return highest
 
     def handle_message(self, sim: Simulator, message: Message) -> None:
         if sim is not self.sim or message.dst != self.node_id:
