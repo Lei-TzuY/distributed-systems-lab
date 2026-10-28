@@ -365,6 +365,42 @@ class MultiPaxosNode:
         )
 
     @property
+    def leader_ballot(self) -> ProposalNumber | None:
+        """This node's volatile Phase-1 ballot; authority must be checked separately."""
+        return self._leader_ballot
+
+    @property
+    def leadership_accepted(self) -> tuple[SlotAcceptedValue, ...]:
+        """Accepted records received locally in this ballot's Phase-1 promises."""
+        return tuple(
+            item for peer in sorted(self._promises) for item in self._promises[peer].accepted
+        )
+
+    @property
+    def pending_proposals(self) -> tuple[LeaderAccept, ...]:
+        if self._leader_ballot is None:
+            return ()
+        return tuple(
+            LeaderAccept(slot, self._leader_ballot, self._pending[slot])
+            for slot in sorted(self._pending)
+        )
+
+    def retry_proposal(self, slot: int) -> None:
+        """Retransmit an active Phase-2 proposal without changing its ballot/value."""
+        if (
+            not self.sim.is_alive(self.node_id)
+            or not self.has_leader_authority
+            or self._leader_ballot != self.promised_ballot
+        ):
+            raise PaxosError("Multi-Paxos retry requires live Phase-1 authority")
+        if slot not in self._pending:
+            raise PaxosError("Multi-Paxos retry requires an active proposal")
+        request = LeaderAccept(slot, self._leader_ballot, self._pending[slot])
+        self._receive_accept(request)
+        for peer in self.peers:
+            self.sim.send(self.node_id, peer, request)
+
+    @property
     def has_leader_authority(self) -> bool:
         return (
             self._leader_ballot is not None

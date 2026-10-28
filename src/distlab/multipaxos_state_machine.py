@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from .kv import Delete, Put
+from .kv import ClientRequestConflict, Delete, Put
+from .linearizability import Get
 from .multipaxos import MultiPaxosCluster
 from .paxos import PaxosError, PaxosSafetyViolation
 from .paxos_log import SlotLearnedDecision
@@ -21,6 +22,71 @@ class Append:
     def __post_init__(self) -> None:
         if not self.key:
             raise ValueError("KV key must be non-empty")
+
+
+@dataclass(frozen=True, slots=True)
+class MultiPaxosRequest:
+    """One logical client invocation, including its stable history identity."""
+
+    client_id: str
+    request_id: int
+    operation_id: str
+    operation: Put | Delete | Get | Append
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.client_id, str) or not self.client_id:
+            raise ValueError("client_id must be a non-empty string")
+        if not isinstance(self.operation_id, str) or not self.operation_id:
+            raise ValueError("operation_id must be a non-empty string")
+        if (
+            not isinstance(self.request_id, int)
+            or isinstance(self.request_id, bool)
+            or self.request_id < 0
+        ):
+            raise ValueError("request_id must be a non-negative integer")
+        if not isinstance(self.operation, (Put, Delete, Get, Append)):
+            raise TypeError("client operation must be Put, Delete, Get, or Append")
+        if not isinstance(self.operation.key, str) or not self.operation.key:
+            raise ValueError("client key must be a non-empty string")
+        if isinstance(self.operation, Put) and not isinstance(self.operation.value, str):
+            raise TypeError("Put value must be a string")
+        if isinstance(self.operation, Append) and not isinstance(self.operation.suffix, str):
+            raise TypeError("Append suffix must be a string")
+
+    @property
+    def identity(self) -> tuple[str, int]:
+        return self.client_id, self.request_id
+
+
+@dataclass(frozen=True, slots=True)
+class AppliedRequest:
+    request: MultiPaxosRequest
+    slot: int
+    result: str | None
+
+
+def _apply_decision(
+    state: dict[str, str],
+    requests: dict[tuple[str, int], AppliedRequest],
+    decision: SlotLearnedDecision,
+) -> None:
+    command = decision.value
+    if not isinstance(command, MultiPaxosRequest):
+        apply_multipaxos_command(state, command)
+        return
+    previous = requests.get(command.identity)
+    if previous is not None:
+        if previous.request != command:
+            raise ClientRequestConflict("conflicting Multi-Paxos request identity")
+        return
+    if any(r.request.operation_id == command.operation_id for r in requests.values()):
+        raise ClientRequestConflict("conflicting Multi-Paxos operation_id")
+    if isinstance(command.operation, Get):
+        result = state.get(command.operation.key)
+    else:
+        apply_multipaxos_command(state, command.operation)
+        result = None
+    requests[command.identity] = AppliedRequest(command, decision.slot, result)
 
 
 def apply_multipaxos_command(state: dict[str, str], value: Any) -> None:
@@ -77,6 +143,11 @@ class MultiPaxosStateMachine:
         self._require_alive(node_id)
         return MappingProxyType(dict(self._machine(node_id)["kv"]))
 
+    def client_requests(self, node_id: str) -> Mapping[tuple[str, int], AppliedRequest]:
+        """Dedup/results reconstructed solely from this node's durable applied prefix."""
+        self._require_alive(node_id)
+        return MappingProxyType(dict(self._machine(node_id)["requests"]))
+
     def apply_ready(self, node_id: str) -> tuple[SlotLearnedDecision, ...]:
         """Apply the contiguous prefix, then probe/retry the first unlearned window.
 
@@ -91,7 +162,7 @@ class MultiPaxosStateMachine:
         applied_now: list[SlotLearnedDecision] = []
         while (decision := node.learned_decision(len(applied) + 1)) is not None:
             self._require_chosen(node_id, decision)
-            apply_multipaxos_command(machine["kv"], decision.value)
+            _apply_decision(machine["kv"], machine["requests"], decision)
             applied = (*applied, decision)
             persistent[self._APPLIED] = applied
             machine["applied_through"] = decision.slot
@@ -120,10 +191,17 @@ class MultiPaxosStateMachine:
 
     @staticmethod
     def replay(applied: tuple[SlotLearnedDecision, ...]) -> dict[str, str]:
+        return MultiPaxosStateMachine._replay(applied)[0]
+
+    @staticmethod
+    def _replay(
+        applied: tuple[SlotLearnedDecision, ...],
+    ) -> tuple[dict[str, str], dict[tuple[str, int], AppliedRequest]]:
         state: dict[str, str] = {}
+        requests: dict[tuple[str, int], AppliedRequest] = {}
         for decision in applied:
-            apply_multipaxos_command(state, decision.value)
-        return state
+            _apply_decision(state, requests, decision)
+        return state, requests
 
     def assert_safety(self) -> None:
         """Re-check durable applied prefixes against learned and quorum evidence."""
@@ -142,9 +220,11 @@ class MultiPaxosStateMachine:
                     )
                 reference.setdefault(decision.slot, (node_id, decision.value))
             machine = self.sim.volatile_state[node_id].get(self._VOLATILE)
+            expected_state, expected_requests = self._replay(applied)
             if machine is not None and (
                 machine["applied_through"] != len(applied)
-                or machine["kv"] != self.replay(applied)
+                or machine["kv"] != expected_state
+                or machine["requests"] != expected_requests
             ):
                 raise PaxosSafetyViolation(
                     f"Multi-Paxos state machine for {node_id!r} diverged from its "
@@ -158,7 +238,8 @@ class MultiPaxosStateMachine:
         if machine is None:
             for decision in applied:
                 self._require_chosen(node_id, decision)
-            machine = {"applied_through": len(applied), "kv": self.replay(applied)}
+            state, requests = self._replay(applied)
+            machine = {"applied_through": len(applied), "kv": state, "requests": requests}
             volatile[self._VOLATILE] = machine
             self.sim._record(
                 "multipaxos-state-machine-load",

@@ -22,6 +22,7 @@ deterministic simulator
 - Raft election, RequestVote, AppendEntries, log backtracking, commit advancement, and restart recovery
 - executable Election Safety, Leader Append-Only, Log Matching, Leader Completeness, and State Machine Safety checks
 - deterministic replicated key-value state machine with client request deduplication and recovery
+- Multi-Paxos client Put/Delete/log-based Get with durable deduplication and bounded retry
 - client operation histories and a single-key KV linearizability checker
 - seeded client workload, message-fault, and lifecycle campaigns
 - versioned exact-replay failure artifacts
@@ -34,6 +35,16 @@ This is a correctness laboratory, not a production distributed database. The ori
 Integrated Phase 2 capabilities include snapshot/install-snapshot and compaction, membership changes with joint consensus, leadership transfer, pre-vote, CheckQuorum, bounded heartbeat control, per-node leader runtime generations, and generation-fenced KV authority. The deterministic campaign path now validates leader-generation authority without changing its replayable message schedule.
 
 Phase 3 now includes crash-recoverable single-decree Paxos, a slot-indexed multi-decree Paxos log, stable-leader Multi-Paxos with Phase-1 amortization and takeover recovery, ordered crash-recoverable application of chosen Multi-Paxos slots, plus seeded fault/lifecycle exact-replay campaigns for the Paxos paths. Real-network deployment and production storage/networking remain future architectural phases rather than filler follow-ons.
+
+The Multi-Paxos client slice includes follower catch-up, exactly-once client effects,
+applied-slot acknowledgement evidence, and log-based reads. Run its two-client
+crash/takeover/catch-up/reconstruction demonstration (JSON evidence):
+
+```bash
+PYTHONPATH=src python -m distlab.multipaxos_demo
+```
+
+The client API and bounded liveness contract are documented in [`docs/paxos.md`](docs/paxos.md).
 
 See [`docs/architecture.md`](docs/architecture.md) for invariants and [`docs/stability-checkpoint.md`](docs/stability-checkpoint.md) for the compatibility boundary.
 
