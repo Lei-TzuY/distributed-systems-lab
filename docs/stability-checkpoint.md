@@ -63,3 +63,13 @@ Before integrating maintenance changes:
 - keep seeded/randomized failures exactly replayable
 - add focused invariant/regression coverage for protocol changes
 - verify the exact candidate head is green and the base has not drifted
+
+## Opt-in completion-extension checking
+
+`check_with_pending_extensions(history)` is a separate oracle capability. The
+existing `check(history)`, completed-only history minimizer, campaign failure
+classification, and replay/artifact schemas retain their established behavior.
+Hypothetical completion extensions never append observed responses or establish
+server-side chosen/application evidence. The current minimizer must not be used
+for the new oracle: its completed-only projection can remove necessary pending
+evidence. See [linearizability.md](linearizability.md) for the explicit boundary.
