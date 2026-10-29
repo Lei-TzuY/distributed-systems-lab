@@ -323,11 +323,13 @@ Loss of the client's own journal does not undo server deduplication, but cannot
 recreate client invocations that were never decided. Client state is not a
 production persistence/RPC format.
 
-The existing single-key checker evaluates completed histories. The test scenarios
-resolve lost-acknowledgement writes by exact retry before checking reads that
-observe those writes, and also retain genuinely unchosen incomplete operations.
-The checker does not synthesize completion extensions for pending writes whose
-effects were observed; that pre-existing evidence-tool limitation is unchanged.
+The existing `check(history)` keeps its completed-only projection for campaign
+compatibility. Opt in to `check_with_pending_extensions(history)` to check reads
+that observe a pending lost-Ack write. Its witness may include that write without
+adding a Completion or implying it was chosen. The client Ack gate is unchanged;
+only a later actual retry can publish the missing acknowledgement. See
+[`linearizability.md`](linearizability.md) for formal semantics, budgets, witness
+replay, and the unsupported extension/minimizer combination.
 
 Run `python -m distlab.multipaxos_demo` for concrete slot/ballot/request/status,
 chosen/applied, replica KV/dedup, and linearizability evidence. It exercises two

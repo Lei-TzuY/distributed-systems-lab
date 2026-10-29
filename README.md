@@ -24,6 +24,7 @@ deterministic simulator
 - deterministic replicated key-value state machine with client request deduplication and recovery
 - Multi-Paxos client Put/Delete/log-based Get with durable deduplication and bounded retry
 - client operation histories and a single-key KV linearizability checker
+- opt-in completion-extension witnesses for histories with incomplete writes
 - seeded client workload, message-fault, and lifecycle campaigns
 - versioned exact-replay failure artifacts
 - deterministic 1-minimal reduction of failing histories, workloads, fault schedules, and lifecycle schedules
@@ -45,6 +46,11 @@ PYTHONPATH=src python -m distlab.multipaxos_demo
 ```
 
 The client API and bounded liveness contract are documented in [`docs/paxos.md`](docs/paxos.md).
+
+For a real lost-Ack history with no fabricated client response, run
+`PYTHONPATH=src python -m distlab.pending_history_demo`. The explicit opt-in
+checker and its search/minimization limits are documented in
+[`docs/linearizability.md`](docs/linearizability.md).
 
 See [`docs/architecture.md`](docs/architecture.md) for invariants and [`docs/stability-checkpoint.md`](docs/stability-checkpoint.md) for the compatibility boundary.
 
