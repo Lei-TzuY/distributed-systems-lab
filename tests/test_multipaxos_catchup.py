@@ -402,7 +402,7 @@ def test_negative_trusting_a_peer_claim_is_detected_by_application_invariant(mon
     chosen = cluster.node("n1").learned_decision(2)
     forged = SlotLearnedDecision(2, chosen.proposal, Append("k", "forged"))
     # Deliberately introduce the plausible bug: trust any well-formed member claim.
-    monkeypatch.setattr(cluster, "_require_recovery_evidence", lambda decision: None)
+    monkeypatch.setattr(cluster, "_require_decision_evidence", lambda decision: None)
     sim.send("n3", "n2", DecisionRecoveryResponse(2, (forged,)))
     sim.run()
     assert cluster.node("n2").learned_decision(2) == forged

@@ -107,6 +107,9 @@ that observes a Phase-2 quorum durably records the chosen slot and broadcasts a
 `LeaderDecision`. Each node keeps a durable, possibly gapped, learned-decision map.
 Decision envelopes must come from the member that owns the decision ballot. A
 conflicting decision for an already-learned slot raises `PaxosSafetyViolation`.
+Before storing a decision, the harness requires a distinct majority of durable
+acceptances matching its exact slot, ballot, and value. Duplicate notifications
+are validated too; a correct value alone cannot authenticate a fabricated ballot.
 Learning is off by default, so existing Multi-Paxos campaign traces, event budgets,
 and artifacts are byte-identical to the pre-application protocol.
 
@@ -117,7 +120,10 @@ is visible in state; any other chosen value is an ordered no-op):
 - `apply_ready(node)` applies slots `last_applied + 1, ...` while each is learned
   and stops at the first gap (`multipaxos-apply-gap`). Later learned slots wait.
 - Each applied slot must match the node's durable learned decision and the cluster's
-  objective chosen evidence, so an unchosen or forged decision is never applied.
+  objective chosen evidence. The local applied/learned slot, ballot, and value must
+  all agree, and that learned ballot must have matching durable quorum evidence.
+  Cached KV/dedup results are revalidated before exposure, including client polling
+  with application disabled, so corrupt provenance cannot justify an Ack.
 - The applied prefix is durable and written in the same simulator step that applies
   the slot. KV state is volatile and is rebuilt by replaying the durable prefix
   after a crash or full reconstruction, so no slot is applied twice.
@@ -129,7 +135,9 @@ is visible in state; any other chosen value is an ordered no-op):
 Leader handoff needs no special application logic: a higher-ballot leader adopts the
 chosen value through Phase 1, re-chooses it, and its decision fills gaps on followers.
 Followers compare applied slots by value, since the same value can be learned
-under different ballots.
+under different ballots. Each node's applied record must nevertheless equal its
+own learned record. Neither record must equal the cluster's first (or highest)
+chosen ballot: each recorded ballot needs its own valid acceptance quorum.
 
 ## Automatic follower catch-up
 
@@ -206,17 +214,15 @@ Applied-prefix compaction is not implemented, and the existing Multi-Paxos
 campaign runner does not yet drive application. Recovery
 fault campaigns live in the focused tests; its existing artifact format is unchanged.
 
-Ordinary decision/application ballot provenance is not validated. Applied and learned
-records are checked by slot and value only. Their `proposal` field is not compared
-with the node's learned ballot
-or with a ballot that formed the slot's durable quorum. A corrupted record that keeps
-the chosen value under a fabricated member ballot is therefore accepted on recovery.
-Applied state is unaffected, because application depends only on slot order and
-value, but the recorded provenance cannot be trusted. Proposed follow-up: require an
-applied record's ballot to equal the learned one, and a learned ballot to be a quorum
-ballot for that slot and value, each with a focused corruption test. Recovery messages
-do require the stated ballot to have durable quorum evidence; this does not repair
-pre-existing ordinary learned or applied provenance.
+Ordinary learning, recovery send/receive, durable safety checkpoints and application
+share the same exact-ballot quorum validator. Reconstruction rejects forged learned
+ballots and applied/learned ballot mismatches using `PaxosSafetyViolation`. A peer
+still supplies only its own durable learned records; the validator does not source
+recovery values from the global chosen map. This remains simulator correctness
+evidence rather than a production distributed proof protocol. It assumes durable
+acceptance histories are the evidence root and retains them without compaction.
+See [ballot-provenance.md](ballot-provenance.md) for the baseline reproductions,
+legitimate two-ballot re-choice, negative mutation results and review commands.
 
 ## Multi-Paxos client-visible KV
 

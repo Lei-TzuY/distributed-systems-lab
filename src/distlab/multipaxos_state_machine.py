@@ -235,9 +235,11 @@ class MultiPaxosStateMachine:
         volatile = self.sim.volatile_state[node_id]
         applied = self._durable_applied(node_id)
         machine = volatile.get(self._VOLATILE)
+        # Revalidate even a cached machine before exposing state or a client result:
+        # durable metadata may have been corrupted since the cache was loaded.
+        for decision in applied:
+            self._require_chosen(node_id, decision)
         if machine is None:
-            for decision in applied:
-                self._require_chosen(node_id, decision)
             state, requests = self._replay(applied)
             machine = {"applied_through": len(applied), "kv": state, "requests": requests}
             volatile[self._VOLATILE] = machine
@@ -262,6 +264,8 @@ class MultiPaxosStateMachine:
                 f"durable Multi-Paxos applied history for {node_id!r} is invalid"
             )
         for expected, item in enumerate(value, start=1):
+            if type(item.slot) is not int or item.slot <= 0:
+                raise PaxosSafetyViolation("durable Multi-Paxos applied slot is invalid")
             if item.slot < expected:
                 raise PaxosSafetyViolation(
                     f"durable Multi-Paxos applied history for {node_id!r} applies "
@@ -276,7 +280,7 @@ class MultiPaxosStateMachine:
 
     def _require_chosen(self, node_id: str, decision: SlotLearnedDecision) -> None:
         learned = self.cluster.node(node_id).learned_decision(decision.slot)
-        if learned is None or learned.value != decision.value:
+        if learned != decision:
             raise PaxosSafetyViolation(
                 f"node {node_id!r} applied Multi-Paxos slot {decision.slot} without "
                 "a matching durable learned decision"
@@ -287,6 +291,7 @@ class MultiPaxosStateMachine:
                 f"node {node_id!r} applied Multi-Paxos slot {decision.slot} without "
                 "matching chosen quorum evidence"
             )
+        self.cluster._require_decision_evidence(learned)
 
     def _require_alive(self, node_id: str) -> None:
         self._require_node(node_id)
