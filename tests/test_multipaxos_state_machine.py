@@ -157,17 +157,15 @@ def test_forged_decision_for_unchosen_slot_is_never_applied() -> None:
     sim, cluster, machine = _cluster()
     ballot = _lead(sim, cluster)
 
-    # A member-authenticated envelope can reach the learner, but application
-    # fails closed because no durable quorum chose the value.
+    # A member-authenticated envelope is insufficient: reject before persisting
+    # a learned record when no durable quorum chose the value at this ballot.
     sim.send("n1", "n2", LeaderDecision(1, ballot, Put("k", "forged")))
-    sim.run()
-    assert cluster.node("n2").learned_decision(1) is not None
-
-    with pytest.raises(PaxosSafetyViolation, match="without matching chosen quorum"):
-        machine.apply_ready("n2")
+    with pytest.raises(PaxosSafetyViolation, match="lacks matching durable quorum"):
+        sim.run()
+    assert cluster.node("n2").learned_decision(1) is None
+    assert machine.apply_ready("n2") == ()
     assert machine.applied("n2") == ()
-    with pytest.raises(PaxosSafetyViolation, match="without matching durable quorum"):
-        cluster.assert_safety()
+    cluster.assert_safety()
 
 
 def test_non_member_and_mismatched_decision_envelopes_are_ignored() -> None:

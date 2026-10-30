@@ -362,9 +362,9 @@ def test_expired_ballot_ticket_and_forged_decision_cannot_complete():
     client.journal.register(forged)
     ballot = cluster.node("n2").leader_ballot
     sim.send("n2", "n2", LeaderDecision(2, ballot, forged))
-    sim.run()
-    with pytest.raises(PaxosSafetyViolation, match="without matching chosen quorum"):
-        client.poll("n2", forged)
+    with pytest.raises(PaxosSafetyViolation, match="lacks matching durable quorum"):
+        sim.run()
+    assert client.poll("n2", forged).status == ClientStatus.PENDING
     assert machine.last_applied("n2") == 1
     assert client.history.completed() == ()
 

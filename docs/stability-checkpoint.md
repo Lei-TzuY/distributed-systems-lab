@@ -73,3 +73,13 @@ Hypothetical completion extensions never append observed responses or establish
 server-side chosen/application evidence. The current minimizer must not be used
 for the new oracle: its completed-only projection can remove necessary pending
 evidence. See [linearizability.md](linearizability.md) for the explicit boundary.
+
+## Multi-Paxos ballot provenance
+
+Learned decisions require a distinct durable acceptance majority for their exact
+slot, ballot and value. Applied records must equal the same node's learned record;
+different nodes may retain different valid ballots for a re-chosen value. This
+strengthens detection of corrupt evidence without changing message or replay
+artifact formats, the default learner-disabled campaign, or either linearizability
+oracle. The global acceptance check remains a simulator harness invariant, not a
+peer-local recovery data source. See [ballot-provenance.md](ballot-provenance.md).

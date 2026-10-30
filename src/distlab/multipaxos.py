@@ -117,36 +117,49 @@ class MultiPaxosCluster:
     def chosen_slots(self) -> tuple[SlotLearnedDecision, ...]:
         return tuple(self._chosen[slot] for slot in sorted(self._chosen))
 
-    def _require_recovery_evidence(self, decision: SlotLearnedDecision) -> None:
+    def _validate_ballot(self, ballot: object) -> None:
+        if (
+            not isinstance(ballot, ProposalNumber)
+            or not _valid_slot(ballot.round)
+            or not isinstance(ballot.proposer_id, str)
+        ):
+            raise PaxosSafetyViolation("Multi-Paxos evidence has invalid ballot")
+        if ballot.proposer_id not in self.nodes:
+            raise PaxosSafetyViolation(
+                f"Multi-Paxos evidence has non-member proposer {ballot.proposer_id!r}"
+            )
+
+    def _require_decision_evidence(self, decision: SlotLearnedDecision) -> None:
         # This is a harness safety check, not a source of peer-local decisions.
         # In particular, an accepted minority or a peer's claim is insufficient.
-        acceptors = {
-            node_id
-            for node_id, node in self.nodes.items()
-            if any(
-                accepted.slot == decision.slot
-                and accepted.proposal == decision.proposal
-                and accepted.value == decision.value
-                for accepted in node.accept_history
-            )
-        }
+        if not isinstance(decision, SlotLearnedDecision) or not _valid_slot(decision.slot):
+            raise PaxosSafetyViolation("Multi-Paxos decision has invalid slot or record")
+        self._validate_ballot(decision.proposal)
+        acceptors = set()
+        for node_id, node in self.nodes.items():
+            for accepted in node.accept_history:
+                if (
+                    accepted.slot == decision.slot
+                    and accepted.proposal == decision.proposal
+                    and accepted.value == decision.value
+                ):
+                    self._validate_durable_accepted(node, accepted)
+                    acceptors.add(node_id)
+                    break
         if len(acceptors) < self.quorum_size:
             raise PaxosSafetyViolation(
-                f"Multi-Paxos recovery slot {decision.slot} lacks matching durable quorum evidence"
+                f"Multi-Paxos slot {decision.slot} lacks matching durable quorum evidence "
+                f"for ballot {decision.proposal!r}"
             )
 
     def _validate_durable_accepted(
         self, node: MultiPaxosNode, accepted: SlotAcceptedValue
     ) -> None:
-        if accepted.slot <= 0:
+        if not _valid_slot(accepted.slot):
             raise PaxosSafetyViolation(
                 f"Multi-Paxos durable history has invalid slot {accepted.slot}"
             )
-        if accepted.proposal.proposer_id not in self.nodes:
-            raise PaxosSafetyViolation(
-                "Multi-Paxos durable history has non-member proposer "
-                f"{accepted.proposal.proposer_id!r}"
-            )
+        self._validate_ballot(accepted.proposal)
         promised = node.promised_ballot
         if promised is None or accepted.proposal > promised:
             raise PaxosSafetyViolation(
@@ -249,6 +262,7 @@ class MultiPaxosCluster:
                         f"node {node_id!r} learned Multi-Paxos slot {decision.slot} "
                         "without matching durable quorum evidence"
                     )
+                self._require_decision_evidence(decision)
 
 
 class MultiPaxosNode:
@@ -500,7 +514,8 @@ class MultiPaxosNode:
             self._receive_accepted(payload)
         elif isinstance(payload, LeaderDecision):
             if (
-                message.src != payload.ballot.proposer_id
+                not isinstance(payload.ballot, ProposalNumber)
+                or message.src != payload.ballot.proposer_id
                 or payload.ballot.proposer_id not in self.cluster.nodes
             ):
                 return
@@ -533,7 +548,7 @@ class MultiPaxosNode:
             if (decision := self.learned_decision(slot)) is not None
         )
         for decision in decisions:
-            self.cluster._require_recovery_evidence(decision)
+            self.cluster._require_decision_evidence(decision)
         self.sim.send(
             self.node_id, requester, DecisionRecoveryResponse(request.start_slot, decisions)
         )
@@ -565,7 +580,7 @@ class MultiPaxosNode:
                 raise PaxosSafetyViolation(
                     f"Multi-Paxos recovery observed conflicting decisions for slot {decision.slot}"
                 )
-            self.cluster._require_recovery_evidence(decision)
+            self.cluster._require_decision_evidence(decision)
         for decision in response.decisions:
             self._receive_decision(
                 LeaderDecision(decision.slot, decision.proposal, decision.value)
@@ -679,7 +694,7 @@ class MultiPaxosNode:
 
     def _receive_decision(self, decision: LeaderDecision) -> None:
         learned = self.sim.persistent_state[self.node_id].get(self._LEARNED)
-        if decision.slot <= 0 or learned is None:
+        if not _valid_slot(decision.slot) or learned is None:
             self.sim._record(
                 "multipaxos-decision-ignored",
                 node=self.node_id,
@@ -688,12 +703,14 @@ class MultiPaxosNode:
             )
             return
         current = learned.get(decision.slot)
+        if current is not None and current.value != decision.value:
+            raise PaxosSafetyViolation(
+                f"Multi-Paxos learner {self.node_id!r} observed conflicting "
+                f"decisions for slot {decision.slot}"
+            )
+        record = SlotLearnedDecision(decision.slot, decision.ballot, decision.value)
+        self.cluster._require_decision_evidence(record)
         if current is not None:
-            if current.value != decision.value:
-                raise PaxosSafetyViolation(
-                    f"Multi-Paxos learner {self.node_id!r} observed conflicting "
-                    f"decisions for slot {decision.slot}"
-                )
             self.sim._record(
                 "multipaxos-decision-duplicate",
                 node=self.node_id,
@@ -701,9 +718,7 @@ class MultiPaxosNode:
                 ballot=decision.ballot,
             )
             return
-        learned[decision.slot] = SlotLearnedDecision(
-            decision.slot, decision.ballot, decision.value
-        )
+        learned[decision.slot] = record
         self.sim._record(
             "multipaxos-learned",
             node=self.node_id,
@@ -721,20 +736,15 @@ class MultiPaxosNode:
             raise PaxosSafetyViolation("Multi-Paxos durable learned decisions are invalid")
         for slot, decision in learned.items():
             if (
-                not isinstance(slot, int)
-                or isinstance(slot, bool)
-                or slot <= 0
+                not _valid_slot(slot)
                 or not isinstance(decision, SlotLearnedDecision)
+                or not _valid_slot(decision.slot)
                 or decision.slot != slot
             ):
                 raise PaxosSafetyViolation(
                     f"Multi-Paxos durable learned decision for slot {slot!r} is invalid"
                 )
-            if decision.proposal.proposer_id not in self.cluster.nodes:
-                raise PaxosSafetyViolation(
-                    "Multi-Paxos durable learned decision has non-member proposer "
-                    f"{decision.proposal.proposer_id!r}"
-                )
+            self.cluster._validate_ballot(decision.proposal)
 
     def handle_crash(self, sim: Simulator) -> None:
         if sim is not self.sim:
