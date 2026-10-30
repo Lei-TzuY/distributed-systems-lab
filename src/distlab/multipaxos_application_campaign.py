@@ -25,7 +25,7 @@ from .multipaxos_state_machine import Append, MultiPaxosRequest, MultiPaxosState
 from .paxos import PaxosError, PaxosSafetyViolation
 from .randomized_faults import SeededFaultSchedule
 from .replay_codec import canonical_json, encode_trace
-from .simulator import Simulator
+from .simulator import FaultAction, FaultRule, Simulator
 
 
 def _operation(encoded: str) -> Put | Delete | Get | Append:
@@ -43,6 +43,44 @@ def _operation(encoded: str) -> Put | Delete | Get | Append:
     if kind in ("get", "delete") and rest:
         return Get(rest) if kind == "get" else Delete(rest)
     raise ValueError("unsupported application command")
+
+
+def _decode_application_faults(raw: object) -> SeededFaultSchedule:
+    """Decode this opt-in artifact's nullable selectors, keeping legacy v1 strict."""
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        raise ValueError("unsupported application fault schedule")
+    seed = raw.get("seed")
+    rules = raw.get("rules")
+    if type(seed) is not int or not isinstance(rules, list):
+        raise ValueError("invalid application fault schedule")
+
+    decoded: list[FaultRule] = []
+    for item in rules:
+        if not isinstance(item, dict):
+            raise ValueError("invalid application fault rule")
+        try:
+            action = FaultAction(item["action"])
+            src = item["src"]
+            dst = item["dst"]
+            ordinal = item["ordinal"]
+            payload_type = item["payload_type"]
+            delay = item["extra_delay"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid application fault rule") from exc
+        if any(selector is not None and not isinstance(selector, str)
+               for selector in (src, dst, payload_type)):
+            raise ValueError("application fault selectors must be strings or null")
+        if payload_type == "":
+            raise ValueError("application fault payload_type cannot be empty")
+        if ordinal is not None and (type(ordinal) is not int or ordinal <= 0):
+            raise ValueError("application fault ordinal must be positive integer or null")
+        if type(delay) is not int or delay < 0:
+            raise ValueError("application fault extra_delay must be nonnegative integer")
+        decoded.append(FaultRule(
+            action, src=src, dst=dst, ordinal=ordinal,
+            payload_type=payload_type, extra_delay=delay,
+        ))
+    return SeededFaultSchedule(seed=seed, rules=tuple(decoded))
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,7 +321,7 @@ class MultiPaxosApplicationArtifact:
             actions = SeededMultiPaxosActionSchedule.from_json(
                 canonical_json(raw["actions"])
             )
-            faults = SeededFaultSchedule.from_json(canonical_json(raw["faults"]))
+            faults = _decode_application_faults(raw["faults"])
             lifecycle = SeededLifecycleSchedule.from_json(
                 canonical_json(raw["lifecycle"])
             )

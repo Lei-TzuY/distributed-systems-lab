@@ -65,6 +65,16 @@ assert result.pending == ("a-put",)
 assert result.linearizable is True
 ```
 
+## Nullable wildcard fault selectors
+
+The opt-in application artifact decoder supports native `FaultRule` wildcard
+selectors: `src`, `dst`, `ordinal`, and `payload_type` may be `null`.
+A real dropped `LeaderDecision` with `ordinal: null` survives
+`capture ¡÷ to_json ¡÷ from_json ¡÷ replay` with identical evidence bytes.
+Invalid selectors, non-positive ordinals, and negative delays are rejected.
+The legacy `SeededFaultSchedule.from_json()` decoder and
+`MultiPaxosTrialArtifact` remain unchanged.
+
 ## Evidence and limits
 
 `tests/test_multipaxos_application_campaign.py` covers live Put/Get,

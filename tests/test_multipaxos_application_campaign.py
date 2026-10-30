@@ -9,7 +9,10 @@ from distlab.lifecycle import (
     NodeLifecycleKind,
     SeededLifecycleSchedule,
 )
-from distlab.multipaxos_application_campaign import MultiPaxosApplicationScenarioRunner
+from distlab.multipaxos_application_campaign import (
+    MultiPaxosApplicationArtifact,
+    MultiPaxosApplicationScenarioRunner,
+)
 from distlab.multipaxos_campaign import (
     MultiPaxosAction,
     MultiPaxosActionKind,
@@ -215,3 +218,81 @@ def test_unsupported_multiple_keys_refuse_false_single_key_verdict():
     )
     with pytest.raises(ValueError, match="single-key"):
         runner(schedule)
+
+
+def test_wildcard_dropped_decision_artifact_roundtrip_exact_replay():
+    """Real peer recovery from dropped decisions must be a replayable artifact."""
+    faults = SeededFaultSchedule(
+        seed=73,
+        rules=(
+            FaultRule(
+                FaultAction.DROP,
+                src="n1",
+                dst="n3",
+                payload_type="LeaderDecision",
+            ),
+        ),
+    )
+    implementation = runner(faults=faults)
+    original = implementation.run()
+    assert original.violation is None and original.linearizable is True
+    assert original.completed == (("a-put", None), ("b-get", "hello"))
+    assert all(slots == (1, 2) for _, slots in original.applied_slots)
+    assert all(kv == (("k", "hello"),) for _, kv in original.kv)
+    trace = original.trace_json
+    assert '"kind":"drop"' in trace
+    assert "DecisionRecoveryRequest" in trace
+    assert "DecisionRecoveryResponse" in trace
+
+    artifact = MultiPaxosApplicationArtifact.capture(implementation, original)
+    encoded = artifact.to_json()
+    assert json.loads(encoded)["faults"]["rules"][0]["ordinal"] is None
+    recovered = MultiPaxosApplicationArtifact.from_json(encoded)
+    assert recovered.faults == faults
+    assert recovered.to_json() == encoded
+    assert recovered.replay().to_json() == original.to_json()
+
+
+@pytest.mark.parametrize("selectors", [
+    {"src": None, "dst": "n3", "ordinal": None, "payload_type": "LeaderDecision"},
+    {"src": "n1", "dst": None, "ordinal": None, "payload_type": "LeaderDecision"},
+    {"src": "n1", "dst": "n3", "ordinal": None, "payload_type": None},
+    {"src": None, "dst": None, "ordinal": None, "payload_type": None},
+    {"src": "n1", "dst": "n3", "ordinal": 2, "payload_type": "LeaderDecision"},
+])
+def test_application_artifact_nullable_fault_selectors_roundtrip(selectors):
+    rule = FaultRule(FaultAction.DELAY, extra_delay=1, **selectors)
+    schedule = SeededFaultSchedule(seed=73, rules=(rule,))
+    implementation = runner(faults=schedule)
+    original = implementation.run()
+    artifact = MultiPaxosApplicationArtifact.capture(implementation, original)
+    encoded = artifact.to_json()
+    restored = MultiPaxosApplicationArtifact.from_json(encoded)
+    assert restored.faults == schedule
+    assert restored.to_json() == encoded
+    assert restored.replay() == original
+
+
+@pytest.mark.parametrize("field,bad_value", [
+    ("ordinal", True),
+    ("ordinal", 0),
+    ("ordinal", -1),
+    ("ordinal", "1"),
+    ("src", False),
+    ("dst", 8),
+    ("payload_type", 0),
+    ("payload_type", ""),
+    ("extra_delay", True),
+    ("extra_delay", -1),
+])
+def test_application_artifact_rejects_invalid_fault_selectors(field, bad_value):
+    implementation = runner()
+    artifact = MultiPaxosApplicationArtifact.capture(implementation, implementation.run())
+    raw = json.loads(artifact.to_json())
+    raw["faults"]["rules"] = [
+        {"action": "drop", "src": None, "dst": None, "ordinal": None,
+         "payload_type": None, "extra_delay": 0}
+    ]
+    raw["faults"]["rules"][0][field] = bad_value
+    with pytest.raises(ValueError, match="artifact"):
+        MultiPaxosApplicationArtifact.from_json(json.dumps(raw))
