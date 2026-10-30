@@ -210,8 +210,11 @@ test mutant that trusts a peer claim is caught by the application safety invaria
 Learning remains disabled by default: no recovery work, durable state, or messages are
 added to existing learner-disabled campaign traces or replay artifacts.
 
-Applied-prefix compaction is not implemented, and the existing Multi-Paxos
-campaign runner does not yet drive application. Recovery
+Applied-prefix compaction is not implemented. The legacy consensus-only Multi-Paxos
+campaign and its v1 artifacts remain unchanged. An opt-in application-aware campaign
+now drives real client requests, learned/application prefixes, catch-up, fault/lifecycle
+schedules and self-contained exact replay; see `docs/multipaxos-application-campaign.md`.
+Recovery
 fault campaigns live in the focused tests; its existing artifact format is unchanged.
 
 Ordinary learning, recovery send/receive, durable safety checkpoints and application
