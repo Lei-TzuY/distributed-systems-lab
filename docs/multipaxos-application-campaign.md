@@ -25,9 +25,9 @@ separate, explicit deterministic runner:
   using the normal authority and matching-applied-record gate.
 - `withheld_acks` preserves selected invocations as pending even after
   application; no hypothetical completion is written to their observed
-  history. The opt-in completion-extension oracle checks single-key
-  Put/Delete/Get histories, and is **not used** for Append, which is
-  outside its sequential specification.
+  history. The opt-in `MultiKeyKVLinearizabilityChecker` checks independent
+  Put/Delete/Get operations across multiple keys, and is **not used** for
+  Append, which is outside its sequential specification.
 - Real no-quorum runs are **incomplete**, never counted as safety violations
   or claimed successful acknowledgements.
 - Execution is bounded by per-action `events_after`,
@@ -64,6 +64,30 @@ assert result.completed == (("b-get", "v"),)
 assert result.pending == ("a-put",)
 assert result.linearizable is True
 ```
+
+## Multi-key completion-extension oracle (opt-in)
+
+Each Put, Delete, and Get touches exactly one key. Linearizability is local to
+independent objects: the combined history admits a legal completion extension
+if and only if every key's projected observed history admits one. The
+`MultiKeyKVLinearizabilityChecker` returns deterministic, sorted per-key
+`CompletionExtensionResult` witnesses, **not** a fabricated global order or
+a claim that pending writes were durably chosen/acknowledged. Only actual
+invocations and responses are projected, preserving within-key real-time
+precedence and original pending/observed status. Original `OperationHistory`
+is never mutated. A failure on any key produces an overall negative verdict;
+resource exhaustion raises `LinearizabilitySearchExhausted`, never `False`.
+Search limits bound total operations, key count, and states per key.
+
+Example: `put:a:alpha` and `put:b:beta`, then `get:a` returns `alpha` and
+`get:b` returns `beta`. A lost acknowledgement on one key may remain pending
+while reads and writes on the other key complete. Legacy single-key checker
+and completed-only `check()` behavior remain unchanged; existing application
+artifact schema and single-key serialized bytes are unchanged.
+
+**Not supported:** multi-key atomic transactions, cross-key invariant
+specifications, multi-object command atomicity, and a global witness order.
+Append remains outside the Put/Delete/Get linearizability oracle.
 
 ## Nullable wildcard fault selectors
 

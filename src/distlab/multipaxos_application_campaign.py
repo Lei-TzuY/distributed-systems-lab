@@ -12,7 +12,8 @@ from dataclasses import dataclass
 
 from .kv import Delete, Put
 from .lifecycle import SeededLifecycleSchedule
-from .linearizability import Get, SingleKeyKVLinearizabilityChecker
+from .linearizability import Get
+from .multikey_linearizability import MultiKeyKVLinearizabilityChecker
 from .multipaxos import MultiPaxosCluster
 from .multipaxos_campaign import (
     MultiPaxosActionKind,
@@ -145,9 +146,6 @@ class MultiPaxosApplicationScenarioRunner(MultiPaxosScenarioRunner):
                 self.requests[action.action_id] = MultiPaxosRequest(
                     action.node_id, index, action.action_id, _operation(action.value)
                 )
-        keys = {request.operation.key for request in self.requests.values()}
-        if len(keys) > 1:
-            raise ValueError("application campaign currently supports single-key schedules")
         self.withheld_acks = frozenset(withheld_acks)
         self.application_rounds = application_rounds
         self.events_per_round = events_per_round
@@ -245,7 +243,7 @@ class MultiPaxosApplicationScenarioRunner(MultiPaxosScenarioRunner):
         )
         linearizable = None
         if not has_append and violation is None:
-            linearizable = SingleKeyKVLinearizabilityChecker().check_with_pending_extensions(
+            linearizable = MultiKeyKVLinearizabilityChecker().check_with_pending_extensions(
                 client.history
             ).linearizable
         if violation is not None:

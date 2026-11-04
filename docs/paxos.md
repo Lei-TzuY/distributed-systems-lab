@@ -213,7 +213,9 @@ added to existing learner-disabled campaign traces or replay artifacts.
 Applied-prefix compaction is not implemented. The legacy consensus-only Multi-Paxos
 campaign and its v1 artifacts remain unchanged. An opt-in application-aware campaign
 now drives real client requests, learned/application prefixes, catch-up, fault/lifecycle
-schedules and self-contained exact replay; see `docs/multipaxos-application-campaign.md`.
+schedules and self-contained exact replay. An opt-in compositional oracle now checks
+independent single-key Put/Delete/Get operations across multiple keys; it does not
+support atomic cross-key transactions. See `docs/multipaxos-application-campaign.md`.
 Recovery
 fault campaigns live in the focused tests; its existing artifact format is unchanged.
 
