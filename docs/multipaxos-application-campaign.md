@@ -89,6 +89,46 @@ artifact schema and single-key serialized bytes are unchanged.
 specifications, multi-object command atomicity, and a global witness order.
 Append remains outside the Put/Delete/Get linearizability oracle.
 
+## Full Simulator reconstruction checkpoint (opt-in)
+
+Set `reconstruction_boundary=N` on `MultiPaxosApplicationScenarioRunner`
+to simulate one **entire-Simulator replacement** immediately before action
+index `N` (zero-based). The allowed range is `0..len(actions.actions)`.
+This differs from an ordinary node crash/restart: **all** old volatile leader
+authority, transport queues, recovery timers, link partitions/delays and
+message ordinals are discarded. Each fresh simulator receives the same
+configured fault rules, with fresh per-epoch message counters.
+
+Only a **deep copy of the old simulator's durable server state** transfers
+to the new `Simulator`. A separate deep copy of the **client-owned
+`ClientJournal`** keeps invocation identities, pending requests and already
+observed completions. Neither invented responses nor volatile server
+authority transfer across that boundary. Rebuilt replicas reconstruct their
+applied log prefix, dedup table and KV from durable evidence. A subsequent
+`PREPARE` action is required to establish fresh Phase-1 leader authority
+before any new request can complete.
+
+When enabled, the trace contains deterministic `phase=stop` and `phase=start`
+`multipaxos-full-reconstruction` markers, with the boundary index, separating
+the two simulator epochs. Trace times restart at zero **after** the marker;
+they are epoch-local, not one continuous monotonic clock. All original
+pre-reconstruction trace records are retained in order.
+
+`MultiPaxosApplicationArtifact` stores the opt-in
+`reconstruction_boundary` only when enabled, and its full canonical
+`capture -> to_json -> from_json -> replay` round-trip verifies the
+reconstruction, real post-restart client results, pending history and trace.
+**With no checkpoint, the optional field is omitted**: all previously
+captured v1 application artifacts and legacy consensus-only artifacts retain
+their exact serialized bytes and replay meaning.
+
+This is **not** a snapshot/compaction protocol, automatic server leader
+election, client-journal durable storage implementation, or network service.
+It models the external client retaining its journal while the server process
+and volatile simulation are replaced. Pending requests may remain
+unresolved until the schedule provides suitable leader authority and
+transport. The runner supports one full reconstruction boundary per run.
+
 ## Nullable wildcard fault selectors
 
 The opt-in application artifact decoder supports native `FaultRule` wildcard
@@ -111,5 +151,5 @@ has no new fields, schedules or trace events.
 This is a deterministic laboratory, not production networking. The runner
 does not automatically discover new leaders or retry a request on another
 leader; schedules must express prepares and the service must have authority.
-It does not include a general multi-key linearizability oracle, arbitrary
-client journals across reconstruction, or membership changes.
+It does not include atomic multi-key transaction checking, automatic
+client-journal recovery from server storage, or membership changes.
