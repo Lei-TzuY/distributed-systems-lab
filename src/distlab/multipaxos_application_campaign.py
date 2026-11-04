@@ -7,6 +7,7 @@ actual application, client history, and exact deterministic replay evidence.
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass
 
@@ -127,6 +128,7 @@ class MultiPaxosApplicationScenarioRunner(MultiPaxosScenarioRunner):
         withheld_acks: tuple[str, ...] = (),
         application_rounds: int = 8,
         events_per_round: int = 128,
+        reconstruction_boundary: int | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(actions, faults, **kwargs)
@@ -134,6 +136,13 @@ class MultiPaxosApplicationScenarioRunner(MultiPaxosScenarioRunner):
             raise ValueError("application_rounds must be non-negative integer")
         if type(events_per_round) is not int or events_per_round <= 0:
             raise ValueError("events_per_round must be a positive integer")
+        if reconstruction_boundary is not None and (
+            type(reconstruction_boundary) is not int
+            or reconstruction_boundary < 0
+            or reconstruction_boundary > len(actions.actions)
+        ):
+            raise ValueError("reconstruction_boundary must be an action boundary or None")
+        self.reconstruction_boundary = reconstruction_boundary
         ids = {a.action_id for a in actions.actions if a.kind is MultiPaxosActionKind.PROPOSE}
         if len(set(withheld_acks)) != len(withheld_acks) or not set(withheld_acks) <= ids:
             raise ValueError("withheld_acks must be unique proposal action IDs")
@@ -157,6 +166,25 @@ class MultiPaxosApplicationScenarioRunner(MultiPaxosScenarioRunner):
         client = MultiPaxosClient(machine)
         position = 0
         violation = None
+        prior_trace = []
+
+        def reconstruct(boundary: int) -> None:
+            nonlocal sim, cluster, machine, client
+            # Discard all queued messages, callbacks and volatile leader authority.
+            # Only durable *server* state and the separately retained client
+            # journal cross the full-Simulator reconstruction boundary.
+            sim._record("multipaxos-full-reconstruction", boundary=boundary, phase="stop")
+            prior_trace.extend(sim.trace)
+            durable = copy.deepcopy(sim.persistent_state)
+            journal = copy.deepcopy(client.journal)
+            new_sim = Simulator(fault_plan=self.faults.to_fault_plan())
+            new_sim.persistent_state.update(durable)
+            new_cluster = MultiPaxosCluster(new_sim, self.node_ids, learn_decisions=True)
+            new_machine = MultiPaxosStateMachine(new_cluster)
+            new_client = MultiPaxosClient(new_machine, journal)
+            new_machine.assert_safety()
+            sim, cluster, machine, client = new_sim, new_cluster, new_machine, new_client
+            sim._record("multipaxos-full-reconstruction", boundary=boundary, phase="start")
 
         def observe() -> None:
             for node_id in self.node_ids:
@@ -175,6 +203,8 @@ class MultiPaxosApplicationScenarioRunner(MultiPaxosScenarioRunner):
 
         try:
             for boundary, action in enumerate(self.actions.actions):
+                if boundary == self.reconstruction_boundary:
+                    reconstruct(boundary)
                 position = self._apply_lifecycle_boundary(
                     boundary, position, sim, cluster
                 )
@@ -209,6 +239,8 @@ class MultiPaxosApplicationScenarioRunner(MultiPaxosScenarioRunner):
                     sim.run(max_events=action.events_after)
                 observe()
 
+            if self.reconstruction_boundary == len(self.actions.actions):
+                reconstruct(len(self.actions.actions))
             position = self._apply_lifecycle_boundary(
                 len(self.actions.actions), position, sim, cluster
             )
@@ -260,7 +292,7 @@ class MultiPaxosApplicationScenarioRunner(MultiPaxosScenarioRunner):
             completed=completed,
             pending=pending,
             linearizable=linearizable,
-            trace_json=encode_trace(tuple(sim.trace)),
+            trace_json=encode_trace(tuple((*prior_trace, *sim.trace))),
         )
 
 
@@ -277,6 +309,7 @@ class MultiPaxosApplicationArtifact:
     application_rounds: int
     events_per_round: int
     report_json: str
+    reconstruction_boundary: int | None = None
 
     @classmethod
     def capture(
@@ -294,10 +327,11 @@ class MultiPaxosApplicationArtifact:
             application_rounds=runner.application_rounds,
             events_per_round=runner.events_per_round,
             report_json=result.to_json(),
+            reconstruction_boundary=runner.reconstruction_boundary,
         )
 
     def to_json(self) -> str:
-        return canonical_json({
+        data = {
             "version": 1,
             "actions": json.loads(self.actions.to_json()),
             "faults": json.loads(self.faults.to_json()),
@@ -308,7 +342,10 @@ class MultiPaxosApplicationArtifact:
             "application_rounds": self.application_rounds,
             "events_per_round": self.events_per_round,
             "report": json.loads(self.report_json),
-        })
+        }
+        if self.reconstruction_boundary is not None:
+            data["reconstruction_boundary"] = self.reconstruction_boundary
+        return canonical_json(data)
 
     @classmethod
     def from_json(cls, encoded: str) -> MultiPaxosApplicationArtifact:
@@ -342,6 +379,7 @@ class MultiPaxosApplicationArtifact:
                 withheld_acks=tuple(withheld),
                 application_rounds=raw["application_rounds"],
                 events_per_round=raw["events_per_round"],
+                reconstruction_boundary=raw.get("reconstruction_boundary"),
             )
             report = raw["report"]
             if not isinstance(report, dict) or report.get("version") != 1:
@@ -356,6 +394,7 @@ class MultiPaxosApplicationArtifact:
                 application_rounds=runner.application_rounds,
                 events_per_round=runner.events_per_round,
                 report_json=canonical_json(report),
+                reconstruction_boundary=runner.reconstruction_boundary,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("invalid Multi-Paxos application artifact") from exc
@@ -372,6 +411,7 @@ class MultiPaxosApplicationArtifact:
             withheld_acks=self.withheld_acks,
             application_rounds=self.application_rounds,
             events_per_round=self.events_per_round,
+            reconstruction_boundary=self.reconstruction_boundary,
         ).run()
         if result.to_json() != self.report_json:
             raise MultiPaxosReplayMismatch(
