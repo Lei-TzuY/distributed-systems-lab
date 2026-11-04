@@ -206,18 +206,23 @@ def test_no_phase1_quorum_is_incomplete_not_successful_ack():
     assert runner(faults=faults).run() == result
 
 
-def test_unsupported_multiple_keys_refuse_false_single_key_verdict():
+def test_two_key_schedule_is_checked_without_cross_key_value_leakage():
     schedule = SeededMultiPaxosActionSchedule(
         seed=13,
         actions=(
+            MultiPaxosAction("lead", MultiPaxosActionKind.PREPARE, "n1", events_after=20),
             MultiPaxosAction("a", MultiPaxosActionKind.PROPOSE, "n1", slot=1,
-                             value="put:a:v"),
+                             value="put:a:v", events_after=30),
             MultiPaxosAction("b", MultiPaxosActionKind.PROPOSE, "n1", slot=2,
-                             value="get:b"),
+                             value="get:b", events_after=30),
         ),
     )
-    with pytest.raises(ValueError, match="single-key"):
-        runner(schedule)
+    result = runner(schedule).run()
+    assert result.linearizable is True
+    assert result.completed == (("a", None), ("b", None))
+    assert all(slots == (1, 2) for _, slots in result.applied_slots)
+    assert all(state == (("a", "v"),) for _, state in result.kv)
+    assert runner(schedule).run().to_json() == result.to_json()
 
 
 def test_wildcard_dropped_decision_artifact_roundtrip_exact_replay():
@@ -296,3 +301,72 @@ def test_application_artifact_rejects_invalid_fault_selectors(field, bad_value):
     raw["faults"]["rules"][0][field] = bad_value
     with pytest.raises(ValueError, match="artifact"):
         MultiPaxosApplicationArtifact.from_json(json.dumps(raw))
+
+def test_multikey_application_history_pending_ack_and_two_reads_exact_replay():
+    schedule = SeededMultiPaxosActionSchedule(
+        seed=97,
+        actions=(
+            MultiPaxosAction("lead", MultiPaxosActionKind.PREPARE, "n1", events_after=20),
+            MultiPaxosAction("a-put", MultiPaxosActionKind.PROPOSE, "n1",
+                             slot=1, value="put:a:alpha", events_after=30),
+            MultiPaxosAction("b-put", MultiPaxosActionKind.PROPOSE, "n1",
+                             slot=2, value="put:b:beta", events_after=30),
+            MultiPaxosAction("a-get", MultiPaxosActionKind.PROPOSE, "n1",
+                             slot=3, value="get:a", events_after=30),
+            MultiPaxosAction("b-get", MultiPaxosActionKind.PROPOSE, "n1",
+                             slot=4, value="get:b", events_after=30),
+        ),
+    )
+    implementation = runner(schedule, withheld_acks=("a-put",))
+    result = implementation.run()
+    assert result.violation is None and result.linearizable is True
+    assert result.pending == ("a-put",)
+    assert result.completed == (
+        ("b-put", None), ("a-get", "alpha"), ("b-get", "beta")
+    )
+    assert all(slots == (1, 2, 3, 4) for _, slots in result.applied_slots)
+    assert all(
+        state == (("a", "alpha"), ("b", "beta"))
+        for _, state in result.kv
+    )
+    artifact = MultiPaxosApplicationArtifact.capture(implementation, result)
+    serialized = artifact.to_json()
+    assert MultiPaxosApplicationArtifact.from_json(serialized).to_json() == serialized
+    assert MultiPaxosApplicationArtifact.from_json(serialized).replay() == result
+    assert runner(schedule, withheld_acks=("a-put",)).run().to_json() == result.to_json()
+
+
+def test_multikey_application_wildcard_drop_and_catchup_exact_replay():
+    schedule = SeededMultiPaxosActionSchedule(
+        seed=98,
+        actions=(
+            MultiPaxosAction("lead", MultiPaxosActionKind.PREPARE, "n1", events_after=20),
+            MultiPaxosAction("a-put", MultiPaxosActionKind.PROPOSE, "n1",
+                             slot=1, value="put:a:alpha", events_after=30),
+            MultiPaxosAction("b-put", MultiPaxosActionKind.PROPOSE, "n1",
+                             slot=2, value="put:b:beta", events_after=30),
+            MultiPaxosAction("a-get", MultiPaxosActionKind.PROPOSE, "n1",
+                             slot=3, value="get:a", events_after=30),
+            MultiPaxosAction("b-get", MultiPaxosActionKind.PROPOSE, "n1",
+                             slot=4, value="get:b", events_after=30),
+        ),
+    )
+    faults = SeededFaultSchedule(
+        98,
+        (FaultRule(FaultAction.DROP, src="n1", dst="n3",
+                   payload_type="LeaderDecision"),),
+    )
+    implementation = runner(schedule, faults)
+    result = implementation.run()
+    assert result.violation is None and result.linearizable is True
+    assert result.completed == (
+        ("a-put", None), ("b-put", None),
+        ("a-get", "alpha"), ("b-get", "beta"),
+    )
+    assert all(slots == (1, 2, 3, 4) for _, slots in result.applied_slots)
+    assert "DecisionRecoveryRequest" in result.trace_json
+    assert "DecisionRecoveryResponse" in result.trace_json
+    artifact = MultiPaxosApplicationArtifact.capture(implementation, result)
+    encoded = artifact.to_json()
+    assert json.loads(encoded)["faults"]["rules"][0]["ordinal"] is None
+    assert MultiPaxosApplicationArtifact.from_json(encoded).replay().to_json() == result.to_json()

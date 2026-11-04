@@ -61,6 +61,10 @@ from .linearizable_read import (
     LinearizableReadError,
     ReadQuorumUnavailable,
 )
+from .multikey_linearizability import (
+    MultiKeyCompletionExtensionResult,
+    MultiKeyKVLinearizabilityChecker,
+)
 from .multipaxos import MultiPaxosCluster, MultiPaxosNode
 from .multipaxos_campaign import (
     MultiPaxosAction,
@@ -235,6 +239,8 @@ __all__ = [
     "LogEntry",
     "LogMatchingViolation",
     "Message",
+    "MultiKeyCompletionExtensionResult",
+    "MultiKeyKVLinearizabilityChecker",
     "MultiPaxosAction",
     "MultiPaxosActionKind",
     "MultiPaxosCampaignResult",
