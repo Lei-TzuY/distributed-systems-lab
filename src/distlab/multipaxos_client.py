@@ -47,6 +47,19 @@ class ClientJournal:
     history: OperationHistory = field(default_factory=OperationHistory)
     requests: dict[str, MultiPaxosRequest] = field(default_factory=dict)
 
+    def to_json(self) -> str:
+        """Canonical client checkpoint; observations are not server commit proof."""
+        from .client_journal_checkpoint import encode_journal
+
+        return encode_journal(self)
+
+    @classmethod
+    def from_json(cls, encoded: str) -> ClientJournal:
+        """Restore a fresh journal, rejecting malformed or inconsistent input."""
+        from .client_journal_checkpoint import decode_journal
+
+        return decode_journal(encoded, cls)
+
     def register(self, request: MultiPaxosRequest) -> None:
         for previous in self.requests.values():
             if (

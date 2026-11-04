@@ -327,12 +327,15 @@ The adapter does not elect a leader, implement leases, or guarantee completion
 under permanent partition/loss or continued leader changes.
 
 The `ClientJournal` belongs to the client and retains request/history identities,
-including incomplete reads. Retain it (or a deepcopy) when rebuilding the server
-runtime to preserve the same history. Server dedup/results always reconstruct
+including incomplete reads. Retain it (or a deepcopy), or use the strict canonical
+`ClientJournal.to_json()` / `ClientJournal.from_json()` checkpoint when rebuilding
+the client/server runtime to preserve the same history. Server dedup/results always reconstruct
 from server applied decisions and never trust the journal as completion evidence.
 Loss of the client's own journal does not undo server deduplication, but cannot
 recreate client invocations that were never decided. Client state is not a
-production persistence/RPC format.
+production persistence/RPC implementation. The portable JSON schema and its
+validation/evidence boundary are documented in
+[client-journal-checkpoint.md](client-journal-checkpoint.md).
 
 The existing `check(history)` keeps its completed-only projection for campaign
 compatibility. Opt in to `check_with_pending_extensions(history)` to check reads
