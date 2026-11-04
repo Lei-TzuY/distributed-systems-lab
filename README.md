@@ -52,6 +52,10 @@ For a real lost-Ack history with no fabricated client response, run
 checker and its search/minimization limits are documented in
 [`docs/linearizability.md`](docs/linearizability.md).
 
+For opt-in application-aware seeded campaigns with actual client histories, follower
+catch-up, and self-contained exact-replay artifacts, see
+[`docs/multipaxos-application-campaign.md`](docs/multipaxos-application-campaign.md).
+
 See [`docs/architecture.md`](docs/architecture.md) for invariants and [`docs/stability-checkpoint.md`](docs/stability-checkpoint.md) for the compatibility boundary.
 
 ## Development
