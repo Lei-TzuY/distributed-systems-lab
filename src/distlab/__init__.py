@@ -5,6 +5,7 @@ from .campaign import (
     SeededScenarioCampaign,
 )
 from .client_history import KVClientHistory
+from .client_journal_checkpoint import CheckpointLimits, CheckpointResourceLimitExceeded
 from .fault_schedule_minimizer import (
     FaultScheduleMinimizationResult,
     NonLinearizableFaultScheduleMinimizer,
@@ -184,6 +185,8 @@ __all__ = [
     "AppendEntriesResponse",
     "AppliedEntry",
     "CampaignFailureArtifact",
+    "CheckpointLimits",
+    "CheckpointResourceLimitExceeded",
     "ClientOperationKind",
     "ClientRequest",
     "ClientRequestConflict",

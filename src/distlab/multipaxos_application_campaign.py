@@ -11,6 +11,7 @@ import copy
 import json
 from dataclasses import dataclass
 
+from .client_journal_checkpoint import CheckpointLimits
 from .kv import Delete, Put
 from .lifecycle import SeededLifecycleSchedule
 from .linearizability import Get
@@ -130,6 +131,7 @@ class MultiPaxosApplicationScenarioRunner(MultiPaxosScenarioRunner):
         events_per_round: int = 128,
         reconstruction_boundary: int | None = None,
         journal_checkpoint: bool = False,
+        journal_limits: CheckpointLimits | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(actions, faults, **kwargs)
@@ -146,9 +148,16 @@ class MultiPaxosApplicationScenarioRunner(MultiPaxosScenarioRunner):
         self.reconstruction_boundary = reconstruction_boundary
         if type(journal_checkpoint) is not bool:
             raise ValueError("journal_checkpoint must be a boolean")
+        if journal_limits is not None and type(journal_limits) is not CheckpointLimits:
+            raise TypeError("journal_limits must be CheckpointLimits or None")
+        if journal_limits is not None and (
+            not journal_checkpoint or reconstruction_boundary is None
+        ):
+            raise ValueError("journal_limits requires active JSON reconstruction")
         if journal_checkpoint and reconstruction_boundary is None:
             raise ValueError("journal_checkpoint requires a reconstruction_boundary")
         self.journal_checkpoint = journal_checkpoint
+        self.journal_limits = journal_limits
         ids = {a.action_id for a in actions.actions if a.kind is MultiPaxosActionKind.PROPOSE}
         if len(set(withheld_acks)) != len(withheld_acks) or not set(withheld_acks) <= ids:
             raise ValueError("withheld_acks must be unique proposal action IDs")
@@ -182,10 +191,15 @@ class MultiPaxosApplicationScenarioRunner(MultiPaxosScenarioRunner):
             sim._record("multipaxos-full-reconstruction", boundary=boundary, phase="stop")
             prior_trace.extend(sim.trace)
             durable = copy.deepcopy(sim.persistent_state)
-            journal = (
-                ClientJournal.from_json(client.journal.to_json())
-                if self.journal_checkpoint else copy.deepcopy(client.journal)
-            )
+            if self.journal_checkpoint:
+                encoded = client.journal.to_json()
+                journal = (
+                    ClientJournal.from_json(encoded, limits=self.journal_limits)
+                    if self.journal_limits is not None
+                    else ClientJournal.from_json(encoded)
+                )
+            else:
+                journal = copy.deepcopy(client.journal)
             new_sim = Simulator(fault_plan=self.faults.to_fault_plan())
             new_sim.persistent_state.update(durable)
             new_cluster = MultiPaxosCluster(new_sim, self.node_ids, learn_decisions=True)
@@ -320,6 +334,7 @@ class MultiPaxosApplicationArtifact:
     report_json: str
     reconstruction_boundary: int | None = None
     journal_checkpoint: bool = False
+    journal_limits: CheckpointLimits | None = None
 
     @classmethod
     def capture(
@@ -339,6 +354,7 @@ class MultiPaxosApplicationArtifact:
             report_json=result.to_json(),
             reconstruction_boundary=runner.reconstruction_boundary,
             journal_checkpoint=runner.journal_checkpoint,
+            journal_limits=runner.journal_limits,
         )
 
     def to_json(self) -> str:
@@ -358,6 +374,8 @@ class MultiPaxosApplicationArtifact:
             data["reconstruction_boundary"] = self.reconstruction_boundary
         if self.journal_checkpoint:
             data["journal_checkpoint"] = True
+        if self.journal_limits is not None:
+            data["journal_limits"] = self.journal_limits.as_dict()
         return canonical_json(data)
 
     @classmethod
@@ -394,6 +412,10 @@ class MultiPaxosApplicationArtifact:
                 events_per_round=raw["events_per_round"],
                 reconstruction_boundary=raw.get("reconstruction_boundary"),
                 journal_checkpoint=raw.get("journal_checkpoint", False),
+                journal_limits=(
+                    CheckpointLimits.from_dict(raw["journal_limits"])
+                    if "journal_limits" in raw else None
+                ),
             )
             report = raw["report"]
             if not isinstance(report, dict) or report.get("version") != 1:
@@ -410,6 +432,7 @@ class MultiPaxosApplicationArtifact:
                 report_json=canonical_json(report),
                 reconstruction_boundary=runner.reconstruction_boundary,
                 journal_checkpoint=runner.journal_checkpoint,
+                journal_limits=runner.journal_limits,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("invalid Multi-Paxos application artifact") from exc
@@ -428,6 +451,7 @@ class MultiPaxosApplicationArtifact:
             events_per_round=self.events_per_round,
             reconstruction_boundary=self.reconstruction_boundary,
             journal_checkpoint=self.journal_checkpoint,
+            journal_limits=self.journal_limits,
         ).run()
         if result.to_json() != self.report_json:
             raise MultiPaxosReplayMismatch(

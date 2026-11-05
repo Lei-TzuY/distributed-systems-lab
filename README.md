@@ -58,7 +58,8 @@ catch-up, and self-contained exact-replay artifacts, see
 
 See [`docs/architecture.md`](docs/architecture.md) for invariants and [`docs/stability-checkpoint.md`](docs/stability-checkpoint.md) for the compatibility boundary.
 
-Portable client retry/history checkpoints and JSON-based full reconstruction are
+Portable client retry/history checkpoints, opt-in bounded JSON import, and
+full reconstruction are
 documented in [`docs/client-journal-checkpoint.md`](docs/client-journal-checkpoint.md).
 
 ## Development

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from .kv import ClientRequestConflict
 from .linearizability import OperationHistory
@@ -12,6 +13,9 @@ from .multipaxos_state_machine import (
     MultiPaxosStateMachine,
 )
 from .paxos import ProposalNumber
+
+if TYPE_CHECKING:
+    from .client_journal_checkpoint import CheckpointLimits
 
 
 class ClientStatus(StrEnum):
@@ -54,11 +58,13 @@ class ClientJournal:
         return encode_journal(self)
 
     @classmethod
-    def from_json(cls, encoded: str) -> ClientJournal:
-        """Restore a fresh journal, rejecting malformed or inconsistent input."""
+    def from_json(
+        cls, encoded: str, *, limits: CheckpointLimits | None = None
+    ) -> ClientJournal:
+        """Restore observations; optional limits bound hostile JSON resource use."""
         from .client_journal_checkpoint import decode_journal
 
-        return decode_journal(encoded, cls)
+        return decode_journal(encoded, cls, limits=limits)
 
     def register(self, request: MultiPaxosRequest) -> None:
         for previous in self.requests.values():
