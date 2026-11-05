@@ -129,6 +129,22 @@ and volatile simulation are replaced. Pending requests may remain
 unresolved until the schedule provides suitable leader authority and
 transport. The runner supports one full reconstruction boundary per run.
 
+## Resource-bounded client checkpoint reconstruction (opt-in)
+
+For `journal_checkpoint=True`, callers may also pass
+`journal_limits=CheckpointLimits(...)` to the application scenario runner.
+The full-Simulator reconstruction imports a **fresh client journal** under
+the explicit byte/request/event/nesting budgets; an over-limit checkpoint
+raises `CheckpointResourceLimitExceeded` before trusting any imported client
+observation. Pending writes are not converted to completions, and server
+durable applied decisions and fresh Phase-1 authority are still required.
+
+The resulting application artifact stores the optional `journal_limits`
+object only when enabled and reuses exactly those limits during replay. The
+original default, deepcopy reconstruction, and unbounded portable JSON
+reconstruction retain their existing serialized output and trace bytes.
+See `docs/client-journal-checkpoint.md` for API and trust limitations.
+
 ## Nullable wildcard fault selectors
 
 The opt-in application artifact decoder supports native `FaultRule` wildcard

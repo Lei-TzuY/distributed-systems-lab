@@ -102,6 +102,57 @@ behavior. Both paths produce identical simulated results/traces for a valid jour
 See [multipaxos-application-campaign.md](multipaxos-application-campaign.md) for the
 underlying reconstruction model.
 
+## Opt-in bounded recovery (P4.1)
+
+The v1 JSON fields and default importer are unchanged. A caller receiving an
+**untrusted** checkpoint can explicitly set a validated, immutable resource
+budget before parsing the JSON. All four limits are positive integers (booleans
+are rejected); the public defaults are 1 MiB, 4096 requests, 8192 events, and
+maximum JSON nesting depth 16.
+
+```python
+from distlab.client_journal_checkpoint import (
+    CheckpointLimits,
+    CheckpointResourceLimitExceeded,
+)
+from distlab.multipaxos_client import ClientJournal
+
+budget = CheckpointLimits(
+    max_bytes=1_048_576,
+    max_requests=4096,
+    max_events=8192,
+    max_depth=16,
+)
+journal = ClientJournal.from_json(untrusted_json, limits=budget)
+```
+
+The decoder measures **UTF-8 bytes**, with a cheap character-count precheck,
+before calling the JSON parser. A quote/escape-aware preparse scan bounds
+nesting even in malformed JSON; brackets inside JSON strings do not count.
+After parsing, collection budgets bound the number of requests, events,
+abandoned IDs, and client request-ID attachments before constructing journal
+objects. The last two share the request-count cap. Over-limit input raises
+`CheckpointResourceLimitExceeded`, a `ValueError` subclass, **not** a consensus
+violation or a proof that an operation failed. Malformed schema/values still
+fail closed as before. The entire journal is returned only after validation.
+
+For deterministic laboratory reconstruction, `MultiPaxosApplicationScenarioRunner`
+also accepts an optional `journal_limits=CheckpointLimits(...)` when
+`journal_checkpoint=True` and `reconstruction_boundary` is set. The opt-in
+application artifact records the four budget fields under `journal_limits`,
+and exact replay uses the same limits. Invalid/tampered budget fields are
+rejected. An unbounded or legacy journal run retains the original behavior,
+JSON schema, and **identical serialized bytes**.
+
+`ClientJournal.from_json(encoded)` without a budget remains the original
+trusted-compatibility path; existing callers are **not** silently subjected
+to new caps. Security-sensitive callers should explicitly pass suitable
+bounds. This is bounded parsing and reconstruction, not authentication,
+tamper-proof evidence, atomic filesystem storage, real-time CPU scheduling,
+or a complete upper bound on all Python allocation overhead. An attacker
+already able to provide an enormous in-memory string can consume resources
+before this API is entered.
+
 ## Executed implementation evidence
 
 Exact base: `3998f1d982765ea9f8b2c819005693e3d9195b54`.
@@ -140,8 +191,8 @@ candidate SHA, CI and independent review evidence are recorded in the PR.
 This is a bounded laboratory representation, not filesystem durability, a database,
 production RPC, cryptographic authenticity or a compaction protocol. Import builds
 fresh state only after full validation; it does not merge checkpoints or invent
-omitted invocations. Existing checker limits apply. Hostile-input resource limiting
-is outside this format.
+omitted invocations. Existing checker limits apply. The bounded hostile-input importer is opt-in; the original unbounded v1
+decoder is retained for trusted compatibility.
 
 Independently validate the schema, observed event order, request identities and
 terminal metadata. Rebuild fresh clients/servers and test forged claims against

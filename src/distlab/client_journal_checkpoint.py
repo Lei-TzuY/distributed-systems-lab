@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 from .kv import Delete, Put
@@ -15,6 +16,79 @@ if TYPE_CHECKING:
 
 
 _FIELDS = {"version", "requests", "events", "abandoned", "client_request_ids"}
+
+
+class CheckpointResourceLimitExceeded(ValueError):
+    """Untrusted checkpoint exceeds an explicit recovery budget, not a safety verdict."""
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointLimits:
+    """Optional bounded JSON decoding; legacy decoding remains unchanged by default."""
+
+    max_bytes: int = 1_048_576
+    max_requests: int = 4096
+    max_events: int = 8192
+    max_depth: int = 16
+
+    def __post_init__(self) -> None:
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{field.name} must be a positive integer")
+
+    def as_dict(self) -> dict[str, int]:
+        return {field.name: getattr(self, field.name) for field in fields(self)}
+
+    @classmethod
+    def from_dict(cls, value: object) -> CheckpointLimits:
+        keys = {field.name for field in fields(cls)}
+        if not isinstance(value, dict) or set(value) != keys:
+            raise ValueError("invalid client journal resource-limit fields")
+        return cls(**value)
+
+
+def _enforce_input_limits(encoded: str, limits: CheckpointLimits) -> None:
+    # A quick character bound avoids allocating a large UTF-8 copy when
+    # the input clearly exceeds the byte budget.
+    if len(encoded) > limits.max_bytes:
+        raise CheckpointResourceLimitExceeded("checkpoint exceeds max_bytes")
+    if len(encoded.encode("utf-8")) > limits.max_bytes:
+        raise CheckpointResourceLimitExceeded("checkpoint exceeds max_bytes")
+
+    # Scan quotes and escapes before parsing to bound JSON nesting, including
+    # malformed deeply nested payloads. Delimiters inside quoted strings do not count.
+    depth = 0
+    inside = False
+    escaped = False
+    for ch in encoded:
+        if inside:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                inside = False
+        elif ch == '"':
+            inside = True
+        elif ch in "{[":
+            depth += 1
+            if depth > limits.max_depth:
+                raise CheckpointResourceLimitExceeded("checkpoint exceeds max_depth")
+        elif ch in "}]":
+            depth -= 1
+
+
+def _enforce_collection_limits(raw: dict[str, Any], limits: CheckpointLimits) -> None:
+    checks = (
+        ("requests", limits.max_requests, "max_requests"),
+        ("events", limits.max_events, "max_events"),
+        ("abandoned", limits.max_requests, "max_requests"),
+        ("client_request_ids", limits.max_requests, "max_requests"),
+    )
+    for name, maximum, label in checks:
+        if len(raw[name]) > maximum:
+            raise CheckpointResourceLimitExceeded(f"checkpoint {name} exceeds {label}")
 
 
 def _fields(value: object, expected: set[str]) -> dict[str, Any]:
@@ -77,11 +151,20 @@ def _decode_operation(raw: object) -> Put | Delete | Get | Append:
     raise ValueError("unsupported checkpoint operation type")
 
 
-def decode_journal(encoded: str, journal_type: type[ClientJournal]) -> ClientJournal:
+def decode_journal(
+    encoded: str,
+    journal_type: type[ClientJournal],
+    *,
+    limits: CheckpointLimits | None = None,
+) -> ClientJournal:
     """Build fresh objects through the history API after validating every field."""
+    if limits is not None and type(limits) is not CheckpointLimits:
+        raise TypeError("limits must be a CheckpointLimits instance or None")
     try:
         if not isinstance(encoded, str):
             raise ValueError("checkpoint must be a JSON string")
+        if limits is not None:
+            _enforce_input_limits(encoded, limits)
         raw = _fields(
             json.loads(encoded, object_pairs_hook=_unique_object, parse_constant=_constant), _FIELDS
         )
@@ -90,6 +173,8 @@ def decode_journal(encoded: str, journal_type: type[ClientJournal]) -> ClientJou
         for field in ("requests", "events", "abandoned", "client_request_ids"):
             if not isinstance(raw[field], list):
                 raise ValueError("checkpoint collections must be arrays")
+        if limits is not None:
+            _enforce_collection_limits(raw, limits)
 
         requests: dict[str, MultiPaxosRequest] = {}
         identities: set[tuple[str, int]] = set()
@@ -156,7 +241,9 @@ def decode_journal(encoded: str, journal_type: type[ClientJournal]) -> ClientJou
             history.abandon(operation_id)
             abandoned.add(operation_id)
         return journal_type(history=history, requests=requests)
-    except (KeyError, TypeError, ValueError) as exc:
+    except CheckpointResourceLimitExceeded:
+        raise
+    except (KeyError, TypeError, ValueError, RecursionError) as exc:
         raise ValueError(f"invalid client journal checkpoint: {exc}") from exc
 
 
